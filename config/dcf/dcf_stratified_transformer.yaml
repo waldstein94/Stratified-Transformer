@@ -1,7 +1,7 @@
 DATA:
-  data_name: scannetv2
-  data_root: dataset/scannetv2 # Fill in the pre-processed data path (which contains the 'train', 'val', 'test' directories)
-  classes: 20
+  data_name: cuboid
+  data_root: dataset/dcf # Fill in the pre-processed data path (which contains the 'train', 'val', 'test' directories)
+  classes: 19
   fea_dim: 6
   voxel_size: 0.02
   voxel_max: 120000  # maximum number of input samples
@@ -45,8 +45,8 @@ TRAIN:
   optimizer: AdamW #SGD
   train_gpu: [0]  #[0, 1, 2, 3]
   workers: 0  # data loader workers
-  batch_size: 2 # batch size for training
-  batch_size_val: 1 # batch size for validation during training, memory and speed tradeoff
+  batch_size: 6 # batch size for training
+  batch_size_val: 50 # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.006
   epochs: 100
   start_epoch: 0
@@ -60,7 +60,8 @@ TRAIN:
   manual_seed: 123
   print_freq: 1
   save_freq: 1
-  save_path: runs/sacnnetv2_stratified_transformer  # corresponding to name
+  save_path: runs/dcf_stratified_transformer  # corresponding to name
+  result_path: results/dcf_stratified_transformer  # corresponding to name
   weight:  # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
@@ -73,7 +74,7 @@ Distributed:
   rank: 0
 
 TEST:
-  data_root_val: data/scannetv2/val # Fill the path that contains the scenes of the validation set (e.g., "[YOUR PATH]/val")
+  data_root_val: data/dcf/test # Fill the path that contains the scenes of the validation set (e.g., "[YOUR PATH]/val")
   split: val  # split in [train, val and test]
   test_gpu: [0]
   test_workers: 0
