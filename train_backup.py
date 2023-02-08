@@ -21,18 +21,14 @@ from tensorboardX import SummaryWriter
 from util import dataset, config
 from util.s3dis import S3DIS
 from util.scannet_v2 import Scannetv2
-from util.dcf import DCF
 from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port, poly_learning_rate, smooth_loss
-from util.data_util import collate_fn_dcf, collate_fn_dcf_eval
+from util.data_util import collate_fn, collate_fn_limit
 from util import transform
 from util.logger import get_logger
-from util.iostream import *
 
 from functools import partial
 from util.lr import MultiStepWithWarmup, PolyLR, PolyLRwithWarmup
 import torch_points_kernels as tp
-
-
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Semantic Segmentation')
@@ -59,10 +55,10 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
-
-    if not os.path.exists(args.result_path):
-        os.makedirs(args.result_path)
-
+    # import torch.backends.mkldnn
+    # ackends.mkldnn.enabled = False
+    # os.environ["LRU_CACHE_CAPACITY"] = "1"
+    # cudnn.deterministic = True
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
         np.random.seed(args.manual_seed)
@@ -100,23 +96,41 @@ def main_worker(gpu, ngpus_per_node, argss):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
     
     # get model
-    from model.stratified_transformer import Stratified
+    if args.arch == 'stratified_transformer':
+        
+        from model.stratified_transformer import Stratified
 
-    args.patch_size = args.grid_size * args.patch_size
-    args.window_size = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
-    args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
-    args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
+        args.patch_size = args.grid_size * args.patch_size
+        args.window_size = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
+        args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
+        args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
 
-    model = Stratified(args.downsample_scale, args.depths, args.channels, args.num_heads, args.window_size, \
-        args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
-        rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, num_classes=args.classes, \
-        ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
+        model = Stratified(args.downsample_scale, args.depths, args.channels, args.num_heads, args.window_size, \
+            args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
+            rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, num_classes=args.classes, \
+            ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
 
+    elif args.arch == 'swin3d_transformer':
+        
+        from model.swin3d_transformer import Swin
+
+        args.patch_size = args.grid_size * args.patch_size
+        args.window_sizes = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
+        args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
+        args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
+
+        model = Swin(args.depths, args.channels, args.num_heads, \
+            args.window_sizes, args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
+            rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, \
+            concat_xyz=args.concat_xyz, num_classes=args.classes, \
+            ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
+
+    else:
+        raise Exception('architecture {} not supported yet'.format(args.arch))
     
     # set loss func 
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
-    l1loss = torch.nn.L1Loss().cuda()
-
+    
     # set optimizer
     if args.optimizer == 'SGD':
         optimizer = torch.optim.SGD(model.parameters(), lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -183,10 +197,39 @@ def main_worker(gpu, ngpus_per_node, argss):
             if main_process():
                 logger.info("=> no checkpoint found at '{}'".format(args.resume))
 
-    train_split = args.get("train_split", "train")
-    if main_process():
-        logger.info("scannet. train_split: {}".format(train_split))
-        train_data = DCF(split=train_split, data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True)
+    if args.data_name == 's3dis':
+        train_transform = None
+        if args.aug:
+            jitter_sigma = args.get('jitter_sigma', 0.01)
+            jitter_clip = args.get('jitter_clip', 0.05)
+            if main_process():
+                logger.info("augmentation all")
+                logger.info("jitter_sigma: {}, jitter_clip: {}".format(jitter_sigma, jitter_clip))
+            train_transform = transform.Compose([
+                transform.RandomRotate(along_z=args.get('rotate_along_z', True)),
+                transform.RandomScale(scale_low=args.get('scale_low', 0.8), scale_high=args.get('scale_high', 1.2)),
+                transform.RandomJitter(sigma=jitter_sigma, clip=jitter_clip),
+                transform.RandomDropColor(color_augment=args.get('color_augment', 0.0))
+            ])
+        train_data = S3DIS(split='train', data_root=args.data_root, test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=args.voxel_max, transform=train_transform, shuffle_index=True, loop=args.loop)
+    elif args.data_name == 'scannetv2':
+        train_transform = None
+        if args.aug:
+            if main_process():
+                logger.info("use Augmentation")
+            train_transform = transform.Compose([
+                transform.RandomRotate(along_z=args.get('rotate_along_z', True)),
+                transform.RandomScale(scale_low=args.get('scale_low', 0.8), scale_high=args.get('scale_high', 1.2)),
+                transform.RandomDropColor(color_augment=args.get('color_augment', 0.0))
+            ])
+            
+        train_split = args.get("train_split", "train")
+        if main_process():
+            logger.info("scannet. train_split: {}".format(train_split))
+
+        train_data = Scannetv2(split=train_split, data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, transform=train_transform, shuffle_index=True, loop=args.loop)
+    else:
+        raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
     if main_process():
             logger.info("train_data samples: '{}'".format(len(train_data)))
@@ -195,17 +238,22 @@ def main_worker(gpu, ngpus_per_node, argss):
     else:
         train_sampler = None
     train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, \
-        pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=partial(collate_fn_dcf, max_batch_points=args.max_batch_points, logger=logger if main_process() else None))
+        pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=partial(collate_fn_limit, max_batch_points=args.max_batch_points, logger=logger if main_process() else None))
 
     val_transform = None
-    val_data = DCF(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000)
+    if args.data_name == 's3dis':
+        val_data = S3DIS(split='val', data_root=args.data_root, test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=800000, transform=val_transform)
+    elif args.data_name == 'scannetv2':
+        val_data = Scannetv2(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, transform=val_transform)
+    else:
+        raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
     if args.distributed:
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
     else:
         val_sampler = None
     val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, \
-            pin_memory=True, sampler=val_sampler, collate_fn=collate_fn_dcf_eval)
+            pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
     
     # set scheduler
     if args.scheduler == "MultiStepWithWarmup":
@@ -256,8 +304,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             logger.info("lr: {}".format(scheduler.get_last_lr()))
             
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler)
-
+        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler)
         if args.scheduler_update == 'epoch':
             scheduler.step()
         epoch_log = epoch + 1
@@ -270,8 +317,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
-            validate_qualitative(args, epoch, val_loader, model, criterion, l1loss)
-            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, l1loss)
+            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
 
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
@@ -290,38 +336,34 @@ def main_worker(gpu, ngpus_per_node, argss):
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
-        torch.cuda.empty_cache()
 
     if main_process():
         writer.close()
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
 
 
-def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler):
+def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     loss_meter = AverageMeter()
-    offset_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
     target_meter = AverageMeter()
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
-    for i, (coord, feat, target, offset, shift) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
-        # if i>5:
-        #     break
+    for i, (coord, feat, target, offset) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
 
         offset_ = offset.clone()
         offset_[1:] = offset_[1:] - offset_[:-1]
-        batch = torch.cat([torch.tensor([ii]*o) for ii, o in enumerate(offset_)], 0).long()
+        batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long()
 
         sigma = 1.0
         radius = 2.5 * args.grid_size * sigma
         neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord, coord, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
     
-        coord, feat, target, offset, shift = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True), shift.cuda(non_blocking=True)
+        coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
         batch = batch.cuda(non_blocking=True)
         neighbor_idx = neighbor_idx.cuda(non_blocking=True)
         assert batch.shape[0] == feat.shape[0]
@@ -331,24 +373,20 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
 
         use_amp = args.use_amp
         with torch.cuda.amp.autocast(enabled=use_amp):
-            output, out_shift = model(feat, coord, offset, batch, neighbor_idx)
+            output = model(feat, coord, offset, batch, neighbor_idx)
             assert output.shape[1] == args.classes
             if target.shape[-1] == 1:
                 target = target[:, 0]  # for cls
             loss = criterion(output, target)
-
-            # for predicted offset vectors
-            loss_shift = l1loss(out_shift, shift)
-            loss_total = loss + loss_shift
-
+            
         optimizer.zero_grad()
         
         if use_amp:
-            scaler.scale(loss_total).backward()
+            scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss_total.backward()
+            loss.backward()
             optimizer.step()
 
         if args.scheduler_update == 'step':
@@ -362,16 +400,14 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
             dist.all_reduce(loss), dist.all_reduce(count)
             n = count.item()
             loss /= n
-        intersection, union, target = 0, 0, 0 #A intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-
+        intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
         if args.multiprocessing_distributed:
             dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        intersection, union, target = 0, 0, 0  #intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
         intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        accuracy = 0 #sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         loss_meter.update(loss.item(), n)
-        offset_meter.update(loss_shift.item(), n)
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -394,13 +430,11 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         'Loss {loss_meter.val:.4f} '
-                        'Loss_offset {offset_meter.val:.4f} '
                         'Lr: {lr} '
                         'Accuracy {accuracy:.4f}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
                                                           loss_meter=loss_meter,
-                                                          offset_meter=offset_meter,
                                                           lr=lr,
                                                           accuracy=accuracy))
         if main_process():
@@ -408,25 +442,23 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
             writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
             writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
             writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
-        torch.cuda.empty_cache()
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
     mIoU = np.mean(iou_class)
     mAcc = np.mean(accuracy_class)
-    allAcc = 0 # sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
     if main_process():
         logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
     return loss_meter.avg, mIoU, mAcc, allAcc
 
 
-def validate(val_loader, model, criterion, l1loss):
+def validate(val_loader, model, criterion):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
     data_time = AverageMeter()
     loss_meter = AverageMeter()
-    offset_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
     target_meter = AverageMeter()
@@ -435,7 +467,7 @@ def validate(val_loader, model, criterion, l1loss):
 
     model.eval()
     end = time.time()
-    for i, (coord, feat, target, offset, shift) in enumerate(val_loader):
+    for i, (coord, feat, target, offset) in enumerate(val_loader):
         data_time.update(time.time() - end)
     
         offset_ = offset.clone()
@@ -446,7 +478,7 @@ def validate(val_loader, model, criterion, l1loss):
         radius = 2.5 * args.grid_size * sigma
         neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord, coord, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
     
-        coord, feat, target, offset, shift = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True), shift.cuda(non_blocking=True)
+        coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
         batch = batch.cuda(non_blocking=True)
         neighbor_idx = neighbor_idx.cuda(non_blocking=True)
         assert batch.shape[0] == feat.shape[0]
@@ -458,9 +490,8 @@ def validate(val_loader, model, criterion, l1loss):
             feat = torch.cat([feat, coord], 1)
 
         with torch.no_grad():
-            output, out_shift = model(feat, coord, offset, batch, neighbor_idx)
+            output = model(feat, coord, offset, batch, neighbor_idx)
             loss = criterion(output, target)
-            loss_shift = l1loss(out_shift, shift)
 
         output = output.max(1)[1]
         n = coord.size(0)
@@ -479,7 +510,6 @@ def validate(val_loader, model, criterion, l1loss):
 
         accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         loss_meter.update(loss.item(), n)
-        offset_meter.update(loss_shift.item(), n)
         batch_time.update(time.time() - end)
         end = time.time()
         if (i + 1) % args.print_freq == 0 and main_process():
@@ -487,12 +517,10 @@ def validate(val_loader, model, criterion, l1loss):
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}) '
-                        'Loss_offset {offset_meter.val:.4f} ({offset_meter.avg:.4f}) '
                         'Accuracy {accuracy:.4f}.'.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
                                                           loss_meter=loss_meter,
-                                                          offset_meter=offset_meter,
                                                           accuracy=accuracy))
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
@@ -507,50 +535,6 @@ def validate(val_loader, model, criterion, l1loss):
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
     
     return loss_meter.avg, mIoU, mAcc, allAcc
-
-
-def validate_qualitative(args, epoch, val_loader, model, criterion, l1loss):
-    if main_process():
-        logger.info('>>>>>>>>>>>>>>>> Start Qualitative Evaluation >>>>>>>>>>>>>>>>')
-
-    torch.cuda.empty_cache()
-
-    model.eval()
-    end = time.time()
-    for i, (coord, feat, target, offset, shift) in enumerate(val_loader):
-        offset_ = offset.clone()
-        offset_[1:] = offset_[1:] - offset_[:-1]
-        batch = torch.cat([torch.tensor([ii] * o) for ii, o in enumerate(offset_)], 0).long()
-
-        sigma = 1.0
-        radius = 2.5 * args.grid_size * sigma
-        neighbor_idx = \
-        tp.ball_query(radius, args.max_num_neighbors, coord, coord, mode="partial_dense", batch_x=batch, batch_y=batch)[
-            0]
-
-        coord, feat, target, offset, shift = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(
-            non_blocking=True), offset.cuda(non_blocking=True), shift.cuda(non_blocking=True)
-        batch = batch.cuda(non_blocking=True)
-        neighbor_idx = neighbor_idx.cuda(non_blocking=True)
-        assert batch.shape[0] == feat.shape[0]
-
-        if target.shape[-1] == 1:
-            target = target[:, 0]  # for cls
-
-        if args.concat_xyz:
-            feat = torch.cat([feat, coord], 1)
-
-        with torch.no_grad():
-            output, out_shift = model(feat, coord, offset, batch, neighbor_idx)
-
-        output = output.max(1)[1].cpu().numpy()
-        trans_coord = (coord+out_shift).cpu().numpy()
-
-        cls_res_path = os.path.join(args.result_path, '%d_epoch_%d.obj' % (epoch, i))
-        save_obj_color_coding(cls_res_path, coord, output)
-        offset_res_path = os.path.join(args.result_path, '%d_epoch_%d_offset.obj' % (epoch, i))
-        save_obj_color_coding(offset_res_path, trans_coord, output)
-        break
 
 
 if __name__ == '__main__':

@@ -79,6 +79,27 @@ def collate_fn_limit(batch, max_batch_points, logger):
     return torch.cat(coord[:k]), torch.cat(feat[:k]), torch.cat(label[:k]), torch.IntTensor(offset[:k])
     # return torch.cat(coord), torch.cat(feat), torch.cat(label), torch.IntTensor(offset)
 
+
+def collate_fn_dcf(batch, max_batch_points, logger):
+    coord, feat, label, shift = list(zip(*batch))
+    offset, count = [], 0
+    # print("coord:", len(coord))
+    k = 0
+    for item in coord:
+        # print("item shape:",item.shape)
+        count += item.shape[0]
+        if count > max_batch_points:
+            break
+        k += 1
+        offset.append(count)
+
+    if logger is not None and k < len(batch):
+        s = sum([x.shape[0] for x in coord])
+        s_now = sum([x.shape[0] for x in coord[:k]])
+        logger.warning("batch_size shortened from {} to {}, points from {} to {}".format(len(batch), k, s, s_now))
+
+    return torch.cat(coord[:k]), torch.cat(feat[:k]), torch.cat(label[:k]), torch.IntTensor(offset[:k]), torch.cat(shift[:k])
+
 def collate_fn(batch):
     coord, feat, label = list(zip(*batch))
     offset, count = [], 0
@@ -89,6 +110,16 @@ def collate_fn(batch):
         offset.append(count)
     return torch.cat(coord), torch.cat(feat), torch.cat(label), torch.IntTensor(offset)
 
+
+def collate_fn_dcf_eval(batch):
+    coord, feat, label, shift = list(zip(*batch))
+    offset, count = [], 0
+    # print("coord:", len(coord))
+    for item in coord:
+        # print("item shape:",item.shape)
+        count += item.shape[0]
+        offset.append(count)
+    return torch.cat(coord), torch.cat(feat), torch.cat(label), torch.IntTensor(offset), torch.cat(shift)
 
 def area_crop(coord, area_rate, split='train'):
     coord_min, coord_max = np.min(coord, 0), np.max(coord, 0)
@@ -195,6 +226,31 @@ def data_prepare_scannet(coord, feat, label, split='train', voxel_size=0.04, vox
     feat = torch.FloatTensor(feat)
     label = torch.LongTensor(label)
     return coord, feat, label
+
+
+def data_prepare_dcf(coord, feat, label, offset, split='train', voxel_size=0.04, voxel_max=None, shuffle_index=False):
+    if voxel_size:
+        coord_min = np.min(coord, 0)
+        coord -= coord_min
+        uniq_idx = voxelize(coord, voxel_size)
+        coord, feat, label, offset = coord[uniq_idx], feat[uniq_idx], label[uniq_idx], offset[uniq_idx]
+    if voxel_max and label.shape[0] > voxel_max:
+        init_idx = np.random.randint(label.shape[0]) if 'train' in split else label.shape[0] // 2
+        crop_idx = np.argsort(np.sum(np.square(coord - coord[init_idx]), 1))[:voxel_max]
+        coord, feat, label, offset = coord[crop_idx], feat[crop_idx], label[crop_idx], offset[crop_idx]
+    if shuffle_index:
+        shuf_idx = np.arange(coord.shape[0])
+        np.random.shuffle(shuf_idx)
+        coord, feat, label, offset = coord[shuf_idx], feat[shuf_idx], label[shuf_idx], offset[shuf_idx]
+
+    coord_min = np.min(coord, 0)
+    coord -= coord_min
+    coord = torch.FloatTensor(coord)
+    feat = torch.FloatTensor(feat)
+    label = torch.LongTensor(label)
+    offset = torch.FloatTensor(offset)
+    return coord, feat, label, offset
+
 
 def data_prepare_v102(coord, feat, label, split='train', voxel_size=0.04, voxel_max=None, transform=None, shuffle_index=False):
     if transform:

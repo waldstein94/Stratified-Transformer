@@ -391,10 +391,6 @@ class KPConvResBlock(nn.Module):
         feats += shortcut
         return feats
 
-
-# 230207: @ghlee
-# modified stratified transformer for dcf
-# add offset regression module
 class Stratified(nn.Module):
     def __init__(self, downsample_scale, depths, channels, num_heads, window_size, up_k, \
             grid_sizes, quant_sizes, rel_query=True, rel_key=False, rel_value=False, drop_path_rate=0.2, \
@@ -428,13 +424,6 @@ class Stratified(nn.Module):
             nn.BatchNorm1d(channels[0]), 
             nn.ReLU(inplace=True), 
             nn.Linear(channels[0], num_classes)
-        )
-
-        self.regressor = nn.Sequential(
-            nn.Linear(channels[0], channels[0]),
-            nn.BatchNorm1d(channels[0]),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels[0], 3)
         )
 
         self.init_weights()
@@ -476,10 +465,7 @@ class Stratified(nn.Module):
 
         out = self.classifier(feats)
 
-        # for offset regression
-        shift = self.regressor(feats)
-
-        return out, shift
+        return out        
 
     def init_weights(self):
         """Initialize the weights in backbone.
