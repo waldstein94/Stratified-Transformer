@@ -56,7 +56,10 @@ def main_process():
 
 def main():
     args = get_parser()
-    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
+    cuda = torch.device('cuda:%d' % args.train_gpu[0])
+    torch.cuda.set_device(cuda)
+
+#    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
 
