@@ -12,7 +12,7 @@ import glob
 
 
 class DCF(Dataset):
-    def __init__(self, split='train', data_root='trainval', voxel_size=0.04, sigma=0.02, voxel_max=None, shuffle_index=False):
+    def __init__(self,  split='train', data_root='trainval', voxel_size=0.04, sigma=0.02, voxel_max=None, shuffle_index=False):
         super().__init__()
 
         self.split = split
@@ -23,20 +23,27 @@ class DCF(Dataset):
         self.shuffle_index = shuffle_index
 
         if split == "train":
-            self.root = os.path.join(self.data_root, 'train')
+            # self.root = os.path.join(self.data_root, 'train')
+            train_flg = 'train'
         else:
-            self.root = os.path.join(self.data_root, 'test')
-
-        self.data_path = self.load_path_dic(self.root)
+            # self.root = os.path.join(self.data_root, 'test')
+            train_flg = 'test'
+        self.data_path = self.load_path_dic(self.data_root, train_flg)
 
         print("voxel_size: ", voxel_size)
         print("Totally {} samples in {} set.".format(len(self.data_path), split))
 
-    def load_path_dic(self, root_dir):
+    def load_path_dic(self, root_dir, train_flg):
         '''
         load dictionary type data
+        root_dir, [root1, root2, root3,...]
         '''
-        return [f for f in glob.glob(os.path.join(root_dir, '*')) if 'cube' in f]
+        total_path = []
+        for root in root_dir:
+            path_ = [f for f in glob.glob(os.path.join(root, train_flg, '*')) if 'cube' in f]
+            total_path += path_
+        return total_path  # [f for f in glob.glob(os.path.join(root_dir, '*')) if 'cube' in f]
+
 
     def load_item(self, d_path):
         cubes = np.load(d_path, allow_pickle=True)
