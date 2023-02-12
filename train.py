@@ -159,11 +159,11 @@ def main_worker(gpu, ngpus_per_node, argss):
     else:
         model = model.cuda()  #  torch.nn.DataParallel(model.cuda())
 
-    if args.weight:
+    if args.weight and args.train_continue:
         if os.path.isfile(args.weight):
             if main_process():
-                logger.info("=> loading weight '{}'".format(args.weight))
-            checkpoint = torch.load(args.weight)
+                logger.info("=> loading weight '{}'".format(os.path.join(args.weight, args.name)))
+            checkpoint = torch.load(os.path.join(args.weight, args.name))
             model.load_state_dict(checkpoint['state_dict'])
             if main_process():
                 logger.info("=> loaded weight '{}'".format(args.weight))
@@ -287,12 +287,13 @@ def main_worker(gpu, ngpus_per_node, argss):
         if (epoch_log % args.save_freq == 0) and main_process():
             if not os.path.exists(args.save_path + "/model/"):
                 os.makedirs(args.save_path + "/model/")
-            filename = args.save_path + '/model/model_last.pth'
+            filename = os.path.join(args.weight, args.name, 'epoch_%d.pth' % epoch_log)
             logger.info('Saving checkpoint to: ' + filename)
             torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
+
         torch.cuda.empty_cache()
 
     if main_process():
