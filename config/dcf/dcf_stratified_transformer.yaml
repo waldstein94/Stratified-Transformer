@@ -9,8 +9,8 @@ DATA:
 
 TRAIN:
   # arch
-  name: dcf_base # experiment name
-  train_continue: True
+  name: tmp # experiment name
+  train_continue: False
   arch: stratified_transformer
   stem_transformer: False
   use_xyz: True
@@ -47,8 +47,8 @@ TRAIN:
   optimizer: AdamW #SGD
   train_gpu: [0]  #[0, 1, 2, 3]
   workers: 0  # data loader workers
-  batch_size: 20 # batch size for training
-  batch_size_val: 10 # batch size for validation during training, memory and speed tradeoff
+  batch_size: 3 # batch size for training
+  batch_size_val: 2 # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.006
   epochs: 100
   start_epoch: 0
@@ -57,13 +57,16 @@ TRAIN:
   momentum: 0.9
   weight_decay: 0.05
   drop_rate: 0.5
-  edge_weight: 1.5
-  concave_weight: 5
-  
+
+  # gahye
+  edge_weight: 1.5  # edge weight for crossentropy
+  concave_weight: 5  # edge weight for crossentropy
+  offset_weight: 10  # weight for offset loss term
+
   ignore_label: -100 #255
   manual_seed: 123
   print_freq: 1
-  save_freq: 1
+  save_freq: 9
   save_path: runs/dcf_base #dcf_stratified_transformer  # corresponding to name
   result_path: results #dcf_stratified_transformer  # corresponding to name
   weight: checkpoints # path to initial weight (default: none)
