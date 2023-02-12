@@ -2,14 +2,14 @@ import os
 import torch
 import numpy as np
 import itertools
-import trimesh
+# import trimesh
 import open3d as o3d
 
-import MinkowskiEngine as ME
+#import MinkowskiEngine as ME
 from sklearn.cluster import DBSCAN
 from scipy.spatial import distance
 
-from lib.iostream import *
+from util.iostream import *
 
 
 def adjust_learning_rate(optimizer, epoch, lr, schedule, gamma):
