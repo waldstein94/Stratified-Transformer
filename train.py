@@ -62,6 +62,10 @@ def main():
 #    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
+    if not os.path.exists(args.weight):
+        os.makedirs(args.weight)
+    if not os.path.exists(args.result_path):
+        os.makedirs(args.result_path)
 
     if not os.path.exists(args.result_path):
         os.makedirs(args.result_path)
@@ -136,8 +140,8 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     if main_process():
         global logger, writer
-        logger = get_logger(args.save_path)
-        writer = SummaryWriter(args.save_path)
+        logger = get_logger(os.path.join(args.save_path, args.name))
+        writer = SummaryWriter(os.path.join(args.save_path, args.name))
         logger.info(args)
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
@@ -288,14 +292,14 @@ def main_worker(gpu, ngpus_per_node, argss):
                 best_iou = max(best_iou, mIoU_val)
 
         if (epoch_log % args.save_freq == 0) and main_process():
-            if not os.path.exists(args.save_path + "/model/"):
-                os.makedirs(args.save_path + "/model/")
+            if not os.path.exists(os.path.join(args.weight, args.name)):
+                os.makedirs(os.path.join(args.weight, args.name))
             filename = os.path.join(args.weight, args.name, 'epoch_%d.pth' % epoch_log)
             logger.info('Saving checkpoint to: ' + filename)
             torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
-            if is_best:
-                shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
+            # if is_best:
+            #     shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
 
         torch.cuda.empty_cache()
 
