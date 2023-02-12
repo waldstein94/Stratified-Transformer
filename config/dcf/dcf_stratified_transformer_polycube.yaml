@@ -1,6 +1,6 @@
 DATA:
   data_name: cuboid
-  data_root: [dataset/dcf_cuboid, dataset/dcf_polycube, dataset/dcf_scannet] # Fill in the pre-processed data path (which contains the 'train', 'val', 'test' directories)
+  data_root: [dataset/dcf_cuboid, dataset/dcf_polycube] #, dataset/dcf_scannet] # Fill in the pre-processed data path (which contains the 'train', 'val', 'test' directories)
   classes: 19
   fea_dim: 6
   voxel_size: 0.02
@@ -43,7 +43,7 @@ TRAIN:
   warmup_ratio: 0.000001
   use_amp: True
   optimizer: AdamW #SGD
-  train_gpu: [4]  #[0, 1, 2, 3]
+  train_gpu: [5]  #[0, 1, 2, 3]
   workers: 0  # data loader workers
   batch_size: 20 # batch size for training
   batch_size_val: 10 # batch size for validation during training, memory and speed tradeoff
@@ -58,12 +58,12 @@ TRAIN:
   edge_weight: 1.5
   concave_weight: 5
   
-  ignore_label: -100 #255
+  ignore_label: 18 #255
   manual_seed: 123
   print_freq: 1
   save_freq: 1
-  save_path: runs/dcf_base #dcf_stratified_transformer  # corresponding to name
-  result_path: results/dcf_base #dcf_stratified_transformer  # corresponding to name
+  save_path: runs/dcf_cube #dcf_stratified_transformer  # corresponding to name
+  result_path: results/dcf_cube #dcf_stratified_transformer  # corresponding to name
   weight:  # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
@@ -78,7 +78,7 @@ Distributed:
 TEST:
   data_root_val: data/dcf/test # Fill the path that contains the scenes of the validation set (e.g., "[YOUR PATH]/val")
   split: val  # split in [train, val and test]
-  test_gpu: [4]
+  test_gpu: [5]
   test_workers: 0
   batch_size_test: 1
   model_path: # Fill the path of the trained .pth file model
