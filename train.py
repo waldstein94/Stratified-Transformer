@@ -207,8 +207,11 @@ def main_worker(gpu, ngpus_per_node, argss):
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
     else:
         val_sampler = None
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, \
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=True, num_workers=args.workers, \
             pin_memory=True, sampler=val_sampler, collate_fn=collate_fn_dcf_eval)
+    val_viz_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False,
+                                             num_workers=args.workers, \
+                                             pin_memory=True, sampler=val_sampler, collate_fn=collate_fn_dcf_eval)
     
     # set scheduler
     if args.scheduler == "MultiStepWithWarmup":
@@ -273,7 +276,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
-            validate_qualitative(args, epoch, val_loader, model, criterion, l1loss)
+            validate_qualitative(args, epoch, val_viz_loader, model, criterion, l1loss)
             loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, l1loss)
 
             if main_process():
@@ -440,6 +443,8 @@ def validate(val_loader, model, criterion, l1loss):
     model.eval()
     end = time.time()
     for i, (coord, feat, target, offset, shift) in enumerate(val_loader):
+        # if i>2:
+        #     break
         data_time.update(time.time() - end)
     
         offset_ = offset.clone()
