@@ -60,15 +60,13 @@ def main():
     torch.cuda.set_device(cuda)
 
 #    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
-    if not os.path.exists(args.save_path):
-        os.makedirs(args.save_path)
-    if not os.path.exists(args.weight):
-        os.makedirs(args.weight)
-    if not os.path.exists(args.result_path):
-        os.makedirs(args.result_path)
+    if not os.path.exists(os.path.join(args.save_path, args.name)):
+        os.makedirs(os.path.join(args.save_path, args.name))
+    if not os.path.exists(os.path.join(args.weight, args.name)):
+        os.makedirs(os.path.join(args.weight, args.name))
+    if not os.path.exists(os.path.join(args.result_path, args.name)):
+        os.makedirs(os.path.join(args.result_path, args.name))
 
-    if not os.path.exists(args.result_path):
-        os.makedirs(args.result_path)
 
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
@@ -559,9 +557,9 @@ def validate_qualitative(args, epoch, val_loader, model, criterion, l1loss):
         output = output.max(1)[1].cpu().numpy()
         trans_coord = (coord+out_shift).cpu().numpy()
 
-        cls_res_path = os.path.join(args.result_path, '%d_epoch_%d.obj' % (epoch, i))
+        cls_res_path = os.path.join(args.result_path, args.name, '%d_epoch_%d.obj' % (epoch, i))
         save_obj_color_coding(cls_res_path, coord, output)
-        offset_res_path = os.path.join(args.result_path, '%d_epoch_%d_offset.obj' % (epoch, i))
+        offset_res_path = os.path.join(args.result_path, args.name, '%d_epoch_%d_offset.obj' % (epoch, i))
         save_obj_color_coding(offset_res_path, trans_coord, output)
         break
 
