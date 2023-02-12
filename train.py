@@ -313,7 +313,7 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
     end = time.time()
     max_iter = args.epochs * len(train_loader)
     for i, (coord, feat, target, offset, shift) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
-        # if i>5:
+        # if i>3:
         #     break
         data_time.update(time.time() - end)
 
@@ -343,7 +343,7 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
 
             # for predicted offset vectors
             loss_shift = l1loss(out_shift, shift)
-            loss_total = loss + loss_shift
+            loss_total = loss + args.offset_weight * loss_shift
 
         optimizer.zero_grad()
         
