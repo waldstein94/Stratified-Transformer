@@ -211,7 +211,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         val_sampler = None
     val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=True, num_workers=args.workers, \
             pin_memory=True, sampler=val_sampler, collate_fn=collate_fn_dcf_eval)
-    val_viz_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False,
+    val_viz_loader = torch.utils.data.DataLoader(val_data, batch_size=args.viz_size_val, shuffle=False,
                                              num_workers=args.workers, \
                                              pin_memory=True, sampler=val_sampler, collate_fn=collate_fn_dcf_eval)
     
@@ -264,7 +264,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             logger.info("lr: {}".format(scheduler.get_last_lr()))
             
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler)
+        loss_train, loss_offset, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler)
 
         if args.scheduler_update == 'epoch':
             scheduler.step()
@@ -272,22 +272,24 @@ def main_worker(gpu, ngpus_per_node, argss):
         
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
-            writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
-            writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
+            writer.add_scalar('loss_offset', loss_offset, epoch_log)
+            # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
+            # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
+            # writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
             validate_qualitative(args, epoch, val_viz_loader, model, criterion, l1loss)
-            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, l1loss)
+            loss_val, loss_offset, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, l1loss)
 
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
-                writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
-                writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-                writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-                is_best = mIoU_val > best_iou
-                best_iou = max(best_iou, mIoU_val)
+                writer.add_scalar('offset_val', loss_offset, epoch_log)
+                # writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
+                # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
+                # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+                # is_best = mIoU_val > best_iou
+                # best_iou = max(best_iou, mIoU_val)
 
         if (epoch_log % args.save_freq == 0) and main_process():
             if not os.path.exists(os.path.join(args.weight, args.name)):
@@ -414,9 +416,10 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
                                                           accuracy=accuracy))
         if main_process():
             writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
-            writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
+            writer.add_scalar('loss_offset_batch', offset_meter.val, current_iter)
+            # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
+            # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
+            # writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
         torch.cuda.empty_cache()
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
@@ -426,7 +429,7 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
     allAcc = 0 # sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
     if main_process():
         logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
-    return loss_meter.avg, mIoU, mAcc, allAcc
+    return loss_meter.avg, offset_meter.avg, mIoU, mAcc, allAcc
 
 
 def validate(val_loader, model, criterion, l1loss):
@@ -517,7 +520,7 @@ def validate(val_loader, model, criterion, l1loss):
             logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
     
-    return loss_meter.avg, mIoU, mAcc, allAcc
+    return loss_meter.avg, offset_meter.avg, mIoU, mAcc, allAcc
 
 
 def validate_qualitative(args, epoch, val_loader, model, criterion, l1loss):
