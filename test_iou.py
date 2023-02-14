@@ -1,3 +1,7 @@
+"""
+evaluation code based on AP metric
+only for data with bounding box gt
+"""
 import os
 import glob
 import time
@@ -22,9 +26,11 @@ import torch_points_kernels as tp
 import torch.nn.functional as F
 
 from util.train_utils import *
-
 random.seed(123)
 np.random.seed(123)
+
+# for evaluation
+from util.evaluation import DetectionMAP as Evaluate_metric
 
 
 def get_parser():
@@ -113,6 +119,61 @@ def data_prepare():
 def data_prepare_custom():
     return glob.glob(os.path.join(args.eval_data_path, '*'))
 
+# todo
+def data_load_scannet(data_path):
+
+    '''
+    scannet data for mAP evaluation
+    CLASS_LABELS_SEMANTIC = ('*wall', '*floor', 'cabinet', 'bed', 'chair', 'sofa', 'table',
+                    '*door', '*window', 'bookshelf', 'picture', 'counter', 'desk',
+                    'curtain', 'refrigerator', 'shower curtain', 'toilet', 'sink',
+                    'bathtub', 'otherfurniture')
+
+    CLASS_LABELS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39)\
+    '''
+    root_dir = args.eval_data_path
+    name = data_path.split('/')[-1][:-9]
+    filters = [1,2,8,9]
+    coord = np.load(os.path.join(root_dir, name+'_vert.npy'))[:,:3]  # axis-aligned todo need more n. of pts
+    feat = np.ones(coord.shape)
+    label = np.load(os.path.join(root_dir, name+'_sem_label.npy'))
+    bboxes =np.load(os.path.join(root_dir, name+'_bbox.npy'))
+    bbox_param, bbox_idx = bboxes[:, :-1], bboxes[:, -1:]
+    # remove classes to be filtered
+    bbox_param = bbox_param[(bbox_idx != filters).all(axis=1)]
+    center, length = bbox_param[:,:3], bbox_param[:,3:]
+    box_gt = np.hstack((center - length/2, center + length/2))
+
+    for f_idx in filters:
+        coord = coord[label!=f_idx]
+        feat = feat[label!=f_idx]
+        label = label[label!=f_idx]
+
+    # viz box
+    # save_obj('tmp/coord.obj', coord)
+    # box_list = []
+    # for i, param in enumerate(bbox_param):
+    #     center, length = param[:3], param[3:]
+    #     rigid_mat = np.eye(4)
+    #     rigid_mat[:3, -1] = center
+    #     box = trimesh.creation.box(extents=length, transform=rigid_mat)
+    #     if box_list is None:
+    #         box_list = box
+    #     else:
+    #         box_list = trimesh.util.concatenate(box_list, box)
+    # trimesh.exchange.export.export_mesh(box_list, 'tmp/box_list.obj')
+
+    idx_data = []
+    coord_min = np.min(coord, 0)
+    coord -= coord_min
+    idx_sort, count = voxelize(coord, args.voxel_size, mode=1)
+    for i in range(count.max()):
+        idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
+        idx_part = idx_sort[idx_select]
+        idx_data.append(idx_part)
+
+    return coord, feat, box_gt, idx_data, name, coord_min, bbox_param
+
 
 def data_load_custom(data_path):
     samples, f, colors = load_obj_mesh(data_path)
@@ -191,7 +252,8 @@ def input_normalize(coord, feat):
 def test(model):
     logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     batch_time = AverageMeter()
-    args.batch_size_test = 5 
+    args.batch_size_test = 5
+    mAP_CLASSIFICATION = Evaluate_metric(1, ignore_class=[0], overlap_threshold=0.25)
     # args.voxel_max = None
     with torch.no_grad():
         model.eval()
@@ -199,9 +261,14 @@ def test(model):
         check_makedirs(os.path.join(args.result_path, args.name, args.eval_folder))
         data_list = data_prepare_custom()
         for idx, item in enumerate(data_list):
+            if idx>1000:
+                break
+            if args.is_mIOU and 'bbox' not in item:
+                continue
             end = time.time()
 
-            coord, feat, idx_data, data_name = data_load_custom(item)
+            coord, feat, gt_box, idx_data, data_name, coord_min, bbox_param = data_load_scannet(item)
+
             pred = torch.zeros((len(coord), args.classes)).cuda()
             pred_shift = torch.zeros((len(coord), 3)).cuda()
 
@@ -259,6 +326,8 @@ def test(model):
                 pred_shift[idx_part, :] += shift_part
 
             # pred = pred / (pred.sum(-1)[:, None]+1e-8)
+            # move coord to original coord before instantiation
+            coord += coord_min
             pred = pred.max(1)[1].data.cpu().numpy()
             shift_coord = coord + pred_shift.cpu().numpy()  # todo
 
@@ -267,7 +336,7 @@ def test(model):
             save_obj_color_coding(cls_res_path, coord, pred)
             offset_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res_offset.obj')  # todo fix path
             save_obj_color_coding(offset_res_path, shift_coord, pred)
-
+            # exit(0)
             # instantiation
             inst_res_path = os.path.join(args.result_path, args.name, args.eval_folder)
             # mask = np.linalg.norm(pred_offset, axis=1) < 1
@@ -325,6 +394,7 @@ def test(model):
                 cnt += 1
 
             # save new obb
+            pred_box = []
             for k, inst in enumerate(inst_list):
                 o3d_pts = o3d.geometry.PointCloud()
                 o3d_pts.points = o3d.utility.Vector3dVector(inst)
@@ -337,8 +407,60 @@ def test(model):
                 trimesh.exchange.export.export_mesh(obb,
                                                     os.path.join(inst_res_path,
                                                                  data_name + '_m_%d_obb.obj' % k))
+                pred_box.append(np.hstack((obb.centroid-obb.extents/2, obb.centroid+obb.extents/2)))
+            pred_box = np.vstack(pred_box)
 
-            batch_time.update(time.time() - end)
+            # save gt box
+            try:
+                box_list = []
+                for i, param in enumerate(bbox_param):
+                    center, length = param[:3], param[3:]
+                    rigid_mat = np.eye(4)
+                    rigid_mat[:3, -1] = center
+                    box = trimesh.creation.box(extents=length, transform=rigid_mat)
+                    if box_list is None:
+                        box_list = box
+                    else:
+                        box_list = trimesh.util.concatenate(box_list, box)
+                gt_box_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_box_gt.obj')
+                trimesh.exchange.export.export_mesh(box_list, gt_box_path)
+            except:
+                print('fail to save')
+        # ------------------compute mAP (referred by 3D-SIS)------------------------------
+
+            # gt_box = box_gt  # [x1,y1,z1, x2, y2, z2]: shape [n_gt, 6]
+            # gt_class = blobs['gt_box'][0][:, 6].numpy()
+            # pred_box = clip_boxes(pred_box, net._scene_info[:3]).numpy()  # [x1,y1,z1,x2,y2,z2]: shape [n_pred, 6]
+
+            # sort by confidence
+            # sort_index = []
+            # for conf_index in range(pred_conf.shape[0]):
+            #     if pred_conf[conf_index] > cfg.CLASS_THRESH:
+            #         sort_index.append(True)
+            #     else:
+            #         sort_index.append(False)
+            try:
+                mAP_CLASSIFICATION.evaluate(
+                    pred_box, #[sort_index],
+                    # pred_class, #[sort_index],
+                    # pred_conf, #[sort_index],
+                    gt_box) #,
+                    # gt_class)
+                mAP_CLASSIFICATION.finalize_precision()
+                print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+            except:
+                print('fail to compute AP')
+
+        mAP_CLASSIFICATION.finalize()
+        mAP_CLASSIFICATION.finalize_precision()
+        print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
+        print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+        # for class_ind in range(cfg.NUM_CLASSES):
+        #     if class_ind not in mAP_CLASSIFICATION.ignore_class:
+        #         print('class {}: {}'.format(class_ind, mAP_CLASSIFICATION.AP(class_ind)))
+        #-----------------------------------------------------------------------------------
+
+        batch_time.update(time.time() - end)
 
 if __name__ == '__main__':
     main()
