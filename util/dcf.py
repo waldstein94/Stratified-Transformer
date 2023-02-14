@@ -82,7 +82,7 @@ class DCF(Dataset):
         delta_trans = np.random.normal(scale=0.1, size=[1, 3])
         coord = coord + delta_trans
 
-        coord, feat, label, offset = data_prepare(coord, feat, label, offset, self.split, self.voxel_size, self.voxel_max, self.shuffle_index)
+        coord, feat, label, offset = data_prepare(coord, feat, label, offset, self.split, self.voxel_size, self.voxel_max, self.shuffle_index, coord_move=False)
         return coord, feat, label, offset
 
     def __len__(self):

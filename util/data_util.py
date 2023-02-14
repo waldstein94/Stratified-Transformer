@@ -228,7 +228,7 @@ def data_prepare_scannet(coord, feat, label, split='train', voxel_size=0.04, vox
     return coord, feat, label
 
 
-def data_prepare_dcf(coord, feat, label, offset, split='train', voxel_size=0.04, voxel_max=None, shuffle_index=False):
+def data_prepare_dcf(coord, feat, label, offset, split='train', voxel_size=0.04, voxel_max=None, shuffle_index=False, coord_move=True):
     if voxel_size:
         coord_min = np.min(coord, 0)
         coord -= coord_min
@@ -243,8 +243,9 @@ def data_prepare_dcf(coord, feat, label, offset, split='train', voxel_size=0.04,
         np.random.shuffle(shuf_idx)
         coord, feat, label, offset = coord[shuf_idx], feat[shuf_idx], label[shuf_idx], offset[shuf_idx]
 
-    coord_min = np.min(coord, 0)
-    coord -= coord_min
+    if coord_move:
+        coord_min = np.min(coord, 0)
+        coord -= coord_min
     coord = torch.FloatTensor(coord)
     feat = torch.FloatTensor(feat)
     label = torch.LongTensor(label)
