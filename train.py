@@ -264,7 +264,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             logger.info("lr: {}".format(scheduler.get_last_lr()))
             
-        loss_train, loss_offset, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler)
+        loss_train, loss_offset, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler, args.name)
 
         if args.scheduler_update == 'epoch':
             scheduler.step()
@@ -308,7 +308,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
 
 
-def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler):
+def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler, name='name'):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     loss_meter = AverageMeter()
@@ -400,14 +400,15 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
                 lr = [round(x, 8) for x in lr]
             elif isinstance(lr, float):
                 lr = round(lr, 8)
-            logger.info('Epoch: [{}/{}][{}/{}] '
+            logger.info('Name: {}  '
+                        'Epoch: [{}/{}][{}/{}] '
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Remain {remain_time} '
                         'Loss {loss_meter.val:.4f} '
                         'Loss_offset {offset_meter.val:.4f} '
                         'Lr: {lr} '
-                        'Accuracy {accuracy:.4f}.'.format(epoch+1, args.epochs, i + 1, len(train_loader),
+                        'Accuracy {accuracy:.4f}.'.format(name, epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
                                                           loss_meter=loss_meter,
