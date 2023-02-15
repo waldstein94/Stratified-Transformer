@@ -144,6 +144,7 @@ def data_load_custom(data_path):
     coord, feat = samples, colors
 
     idx_data = []
+
     coord_min = np.min(coord, 0)
     coord -= coord_min
     idx_sort, count = voxelize(coord, args.voxel_size, mode=1)

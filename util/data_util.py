@@ -231,7 +231,8 @@ def data_prepare_scannet(coord, feat, label, split='train', voxel_size=0.04, vox
 def data_prepare_dcf(coord, feat, label, offset, split='train', voxel_size=0.04, voxel_max=None, shuffle_index=False, coord_move=True):
     if voxel_size:
         coord_min = np.min(coord, 0)
-        coord -= coord_min
+        if coord_move:
+            coord -= coord_min
         uniq_idx = voxelize(coord, voxel_size)
         coord, feat, label, offset = coord[uniq_idx], feat[uniq_idx], label[uniq_idx], offset[uniq_idx]
     if voxel_max and label.shape[0] > voxel_max:

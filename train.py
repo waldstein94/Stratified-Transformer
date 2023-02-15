@@ -191,7 +191,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     train_split = args.get("train_split", "train")
     if main_process():
         logger.info("scannet. train_split: {}".format(train_split))
-        train_data = DCF(split=train_split, data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True)
+        train_data = DCF(split=train_split, data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=args.voxel_max, shuffle_index=True, coord_move=args.coord_move)
 
     if main_process():
             logger.info("train_data samples: '{}'".format(len(train_data)))
@@ -203,7 +203,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=partial(collate_fn_dcf, max_batch_points=args.max_batch_points, logger=logger if main_process() else None))
 
     val_transform = None
-    val_data = DCF(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000)
+    val_data = DCF(split='val', data_root=args.data_root, voxel_size=args.voxel_size, voxel_max=800000, coord_move=args.coord_move)
 
     if args.distributed:
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)

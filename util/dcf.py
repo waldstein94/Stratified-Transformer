@@ -12,7 +12,7 @@ import glob
 
 
 class DCF(Dataset):
-    def __init__(self,  split='train', data_root='trainval', voxel_size=0.04, sigma=0.02, voxel_max=None, shuffle_index=False):
+    def __init__(self,  split='train', data_root='trainval', voxel_size=0.04, sigma=0.02, voxel_max=None, shuffle_index=False, coord_move=True):
         super().__init__()
 
         self.split = split
@@ -21,7 +21,7 @@ class DCF(Dataset):
         self.voxel_max = voxel_max
         self.sigma = sigma
         self.shuffle_index = shuffle_index
-
+        self.coord_move = coord_move
         if split == "train":
             # self.root = os.path.join(self.data_root, 'train')
             train_flg = 'train'
@@ -82,7 +82,7 @@ class DCF(Dataset):
         delta_trans = np.random.normal(scale=0.1, size=[1, 3])
         coord = coord + delta_trans
 
-        coord, feat, label, offset = data_prepare(coord, feat, label, offset, self.split, self.voxel_size, self.voxel_max, self.shuffle_index, coord_move=False)
+        coord, feat, label, offset = data_prepare(coord, feat, label, offset, self.split, self.voxel_size, self.voxel_max, self.shuffle_index, self.coord_move)
         return coord, feat, label, offset
 
     def __len__(self):
