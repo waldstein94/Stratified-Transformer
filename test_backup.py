@@ -277,7 +277,7 @@ def test(model, criterion, names, test_transform_set):
                             pred_part = model(feat_part, coord_part, offset_part, batch, neighbor_idx)
                             pred_part = F.softmax(pred_part, -1) # Add softmax
 
-                        torch.cuda.empty_cache()
+                        # torch.cuda.empty_cache()
                         pred[idx_part, :] += pred_part
                         logger.info('Test: {}/{}, {}/{}, {}/{}, {}/{}'.format(aug_id+1, len(test_transform_set), idx + 1, len(data_list), e_i, len(idx_list), args.voxel_max, idx_part.shape[0]))
                 pred = pred / (pred.sum(-1)[:, None]+1e-8)

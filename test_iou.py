@@ -119,7 +119,7 @@ def data_prepare():
 def data_prepare_custom():
     return glob.glob(os.path.join(args.eval_data_path, '*'))
 
-# todo
+# todo for AP evaluation
 def data_load_scannet(data_path):
 
     '''
@@ -134,9 +134,19 @@ def data_load_scannet(data_path):
     root_dir = args.eval_data_path
     name = data_path.split('/')[-1][:-9]
     filters = [1,2,8,9]
+    label = np.load(os.path.join(root_dir, name + '_sem_label.npy'))
     coord = np.load(os.path.join(root_dir, name+'_vert.npy'))[:,:3]  # axis-aligned todo need more n. of pts
+    for f_idx in filters:
+        coord = coord[label!=f_idx]
+        label = label[label!=f_idx]
+
+    # remove outlier especially for scannet filter data
+    dbscan = DBSCAN(eps=0.1, min_samples=5).fit(coord)
+    coord = [coord[dbscan.labels_ == idx] for idx in range(dbscan.labels_.max() + 1) if
+               len(coord[dbscan.labels_ == idx]) > 50]
+    coord = np.concatenate(coord)
+
     feat = np.ones(coord.shape)
-    label = np.load(os.path.join(root_dir, name+'_sem_label.npy'))
     bboxes =np.load(os.path.join(root_dir, name+'_bbox.npy'))
     bbox_param, bbox_idx = bboxes[:, :-1], bboxes[:, -1:]
     # remove classes to be filtered
@@ -144,10 +154,6 @@ def data_load_scannet(data_path):
     center, length = bbox_param[:,:3], bbox_param[:,3:]
     box_gt = np.hstack((center - length/2, center + length/2))
 
-    for f_idx in filters:
-        coord = coord[label!=f_idx]
-        feat = feat[label!=f_idx]
-        label = label[label!=f_idx]
 
     # viz box
     # save_obj('tmp/coord.obj', coord)
@@ -163,9 +169,11 @@ def data_load_scannet(data_path):
     #         box_list = trimesh.util.concatenate(box_list, box)
     # trimesh.exchange.export.export_mesh(box_list, 'tmp/box_list.obj')
 
-    idx_data = []
-    coord_min = np.min(coord, 0)
-    coord -= coord_min
+    idx_data, coord_min = [],0
+    if args.coord_move:
+        coord_min = np.min(coord, 0)
+        coord -= coord_min
+
     idx_sort, count = voxelize(coord, args.voxel_size, mode=1)
     for i in range(count.max()):
         idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
@@ -174,7 +182,7 @@ def data_load_scannet(data_path):
 
     return coord, feat, box_gt, idx_data, name, coord_min, bbox_param
 
-
+# should not to be used in this file
 def data_load_custom(data_path):
     samples, f, colors = load_obj_mesh(data_path)
     name = data_path.split('/')[-1].split('.')[0]
@@ -426,7 +434,7 @@ def test(model):
                 trimesh.exchange.export.export_mesh(box_list, gt_box_path)
             except:
                 print('fail to save')
-        # ------------------compute mAP (referred by 3D-SIS)------------------------------
+            # ------------------compute mAP (referred by 3D-SIS)------------------------------
 
             # gt_box = box_gt  # [x1,y1,z1, x2, y2, z2]: shape [n_gt, 6]
             # gt_class = blobs['gt_box'][0][:, 6].numpy()
@@ -447,20 +455,24 @@ def test(model):
                     gt_box) #,
                     # gt_class)
                 mAP_CLASSIFICATION.finalize_precision()
+                mAP_CLASSIFICATION.finalize_recall()
                 print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+                print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
             except:
                 print('fail to compute AP')
 
+        # detected 된 전체 box/ gt 에서 값 추출
         mAP_CLASSIFICATION.finalize()
         mAP_CLASSIFICATION.finalize_precision()
         print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
         print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+        print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
         # for class_ind in range(cfg.NUM_CLASSES):
         #     if class_ind not in mAP_CLASSIFICATION.ignore_class:
         #         print('class {}: {}'.format(class_ind, mAP_CLASSIFICATION.AP(class_ind)))
         #-----------------------------------------------------------------------------------
 
-        batch_time.update(time.time() - end)
+        # batch_time.update(time.time() - end)
 
 if __name__ == '__main__':
     main()

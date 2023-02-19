@@ -29,6 +29,7 @@ class DetectionMAP:
         self.reset_accumulators()
 
         self.mean_precision = 0
+        self.mean_recall = 0
 
     def reset_accumulators(self):
         """
@@ -81,6 +82,7 @@ class DetectionMAP:
         # pred_size = pred_classes.shape[0]
         IoU = None
         IoU = DetectionMAP.compute_IoU(pred_bb, gt_bb)
+        # consider predicted boxes as object which have confident iou value
         IoU[IoU < self.overlap_threshold] = 0
 
         # Final match : 1 prediction per GT
@@ -89,7 +91,9 @@ class DetectionMAP:
             TP, FP, FN = DetectionMAP.compute_TP_FP_FN(IoU)
             acc.inc_predictions(TP, FP)
             acc.inc_not_predicted(FN)
-            acc.precision.append(len(TP)/(len(TP)+FN))
+            # todo add below line
+            acc.precision.append(len(TP)/(len(TP)+len(FP)))
+            acc.recall.append((len(TP)/(len(TP)+FN)))
 
     @staticmethod
     def compute_IoU(prediction, gt):
@@ -228,8 +232,8 @@ class DetectionMAP:
                     max_overlapping = IoU[i, j]
             if ind != -1:
                 TP.append(max_overlapping)  # pred_conf[i], 여기 할당되는 값은 현재 task에서 영향을 미치지 않음
-                IoU_mask[:, ind] = False
-                FN -= 1
+                IoU_mask[:, ind] = False  # indicate box not to be reused
+                FN -= 1  # FN = GT-TP
             else:
                 FP.append(max_overlapping)  # pred_conf[i]
         return TP, FP, FN
@@ -303,6 +307,9 @@ class DetectionMAP:
         for acc_ind, acc in enumerate(self.total_accumulators):
             self.mean_precision = np.mean(acc.precision)
 
+    def finalize_recall(self):
+        for acc_ind, acc in enumerate(self.total_accumulators):
+            self.mean_recall = np.mean(acc.recall)
 
     def unmold_mask(self, mask, bbox, scene_info):
         """
@@ -341,6 +348,7 @@ class APAccumulator:
         # but in this case, we should show our method can cover gt boxes
         # so we follow precision
         self.precision = []
+        self.recall = []
 
     def inc_predictions(self, TP, FP):
         for tp in TP:

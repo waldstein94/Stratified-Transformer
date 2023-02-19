@@ -546,7 +546,7 @@ def instantiation_eval_face_only(path, name, samples, pred_offset, pred_labels):
 
 def instantiation_eval(path, name, samples, pred_offset, pred_labels):
     # instance segmentation based predicted offsets and labels
-    samples_trans = samples + pred_offset
+    samples_trans = samples  + pred_offset
     # samples_trans[pred_labels>5] = samples[pred_labels>5]
     cls_list, label_list = [], []
     inst_idx, indice_list = 0, []
@@ -581,15 +581,16 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         #             continue
         #         instances.append(np.asarray(cl.points))
 
-        # [save_obj_color_coding(os.path.join(path, '%s_%d_%d_instance.obj' % (name, i, k)), item, np.ones(len(item))*np.random.choice(29, 1)) for k, (item) in enumerate(instances) if i<6 ]
+        # save_label = np.asarray([np.ones(len(item))*np.random.choice(29, 1) for k, (item) in enumerate(instances)])
+        # save_obj_color_coding(os.path.join(path,'%s_cls_%d.obj'%(name, i)), np.vstack(instances), np.concatenate(save_label))
 
         cls_list.append(instances)
         for k in range(len(instances)):
             index_list.append(inst_idx)
             inst_idx += 1
         indice_list.append(index_list)
-
     # exit(0)
+
     # build face-edge-face connections based on spatial relation between face and edge
     f_cls_list, e_cls_list = cls_list[:6], cls_list[6:]
     print('name', name, 'len of f', len(list(itertools.chain(*f_cls_list))), 'len of e', len(list(itertools.chain(*e_cls_list))))
@@ -626,13 +627,13 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
                 dist1 = np.min(distance.cdist(e_supp, fsup), axis=1)
                 r = np.sum(dist1<0.1)/len(dist1)
                 # print(r)
-                if r > 0.5:
+                if r > 0.4:
                     paired.append(f_inst_id1[k])
                     break
             for k, fsup in enumerate(f_list2):
                 dist2 = np.min(distance.cdist(e_supp, fsup), axis=1)
                 r = np.sum(dist2 < 0.1) / len(dist2)
-                if r > 0.5:
+                if r > 0.4:
                     paired.append(f_inst_id2[k])
                     break
             # --------------------------------------
@@ -705,7 +706,7 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         cl, ind = pcd.remove_radius_outlier(nb_points=3, radius=0.1)
         supps = np.asarray(cl.points)
 
-        if len(supps)<60:
+        if len(supps)==0:
             continue
 
         #----todo: concave check based on occupancy ratio in projected space-----------
@@ -845,7 +846,7 @@ def compute_partial_iou(box_a, box_b):
     union2 = box_b[3] * box_b[4] * box_b[5]
 
     thre=0.3
-    return intersection/union1>thre, intersection/union2>thre
+    return (intersection/union1)>thre, (intersection/union2)>thre
 
 def minkowski_collate_fn(list_data):
     # collate provided by ME only considers data, feature and labels.

@@ -264,7 +264,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             logger.info("lr: {}".format(scheduler.get_last_lr()))
             
-        loss_train, loss_offset, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler, args.name)
+        loss_train, loss_offset = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler, args.name)
 
         if args.scheduler_update == 'epoch':
             scheduler.step()
@@ -273,23 +273,16 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('loss_offset', loss_offset, epoch_log)
-            # writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
-            # writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            # writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
+
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
             validate_qualitative(args, epoch, val_viz_loader, model, criterion, l1loss)
-            loss_val, loss_offset, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion, l1loss)
+            loss_val, loss_offset  = validate(val_loader, model, criterion, l1loss)
 
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
                 writer.add_scalar('offset_val', loss_offset, epoch_log)
-                # writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
-                # writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-                # writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
-                # is_best = mIoU_val > best_iou
-                # best_iou = max(best_iou, mIoU_val)
 
         if (epoch_log % args.save_freq == 0) and main_process():
             if not os.path.exists(os.path.join(args.weight, args.name)):
@@ -301,7 +294,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             # if is_best:
             #     shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     if main_process():
         writer.close()
@@ -313,9 +306,7 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
     data_time = AverageMeter()
     loss_meter = AverageMeter()
     offset_meter = AverageMeter()
-    intersection_meter = AverageMeter()
-    union_meter = AverageMeter()
-    target_meter = AverageMeter()
+
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
@@ -365,22 +356,7 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
         if args.scheduler_update == 'step':
             scheduler.step()
 
-        output = output.max(1)[1]
         n = coord.size(0)
-        if args.multiprocessing_distributed:
-            loss *= n
-            count = target.new_tensor([n], dtype=torch.long)
-            dist.all_reduce(loss), dist.all_reduce(count)
-            n = count.item()
-            loss /= n
-        intersection, union, target = 0, 0, 0 #A intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-
-        if args.multiprocessing_distributed:
-            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        intersection, union, target = 0, 0, 0  #intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
-
-        accuracy = 0 #sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         loss_meter.update(loss.item(), n)
         offset_meter.update(loss_shift.item(), n)
         batch_time.update(time.time() - end)
@@ -407,30 +383,21 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
                         'Remain {remain_time} '
                         'Loss {loss_meter.val:.4f} '
                         'Loss_offset {offset_meter.val:.4f} '
-                        'Lr: {lr} '
-                        'Accuracy {accuracy:.4f}.'.format(name, epoch+1, args.epochs, i + 1, len(train_loader),
+                        'Lr: {lr} '.format(name, epoch+1, args.epochs, i + 1, len(train_loader),
                                                           batch_time=batch_time, data_time=data_time,
                                                           remain_time=remain_time,
                                                           loss_meter=loss_meter,
                                                           offset_meter=offset_meter,
-                                                          lr=lr,
-                                                          accuracy=accuracy))
+                                                          lr=lr))
         if main_process():
             writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
             writer.add_scalar('loss_offset_batch', offset_meter.val, current_iter)
-            # writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            # writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            # writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
-    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    mIoU = np.mean(iou_class)
-    mAcc = np.mean(accuracy_class)
-    allAcc = 0 # sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+
     if main_process():
         logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
-    return loss_meter.avg, offset_meter.avg, mIoU, mAcc, allAcc
+    return loss_meter.avg, offset_meter.avg  #, mIoU, mAcc, allAcc
 
 
 def validate(val_loader, model, criterion, l1loss):
@@ -440,11 +407,11 @@ def validate(val_loader, model, criterion, l1loss):
     data_time = AverageMeter()
     loss_meter = AverageMeter()
     offset_meter = AverageMeter()
-    intersection_meter = AverageMeter()
-    union_meter = AverageMeter()
+    # intersection_meter = AverageMeter()
+    # union_meter = AverageMeter()
     target_meter = AverageMeter()
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     model.eval()
     end = time.time()
@@ -477,22 +444,15 @@ def validate(val_loader, model, criterion, l1loss):
             loss = criterion(output, target)
             loss_shift = l1loss(out_shift, shift)
 
-        output = output.max(1)[1]
+        # output = output.max(1)[1]
         n = coord.size(0)
-        if args.multiprocessing_distributed:
-            loss *= n
-            count = target.new_tensor([n], dtype=torch.long)
-            dist.all_reduce(loss), dist.all_reduce(count)
-            n = count.item()
-            loss /= n
 
-        intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        if args.multiprocessing_distributed:
-            dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
-        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
 
-        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
+        # intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
+        #
+        # intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
+        # intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+ 
         loss_meter.update(loss.item(), n)
         offset_meter.update(loss_shift.item(), n)
         batch_time.update(time.time() - end)
@@ -502,33 +462,31 @@ def validate(val_loader, model, criterion, l1loss):
                         'Data {data_time.val:.3f} ({data_time.avg:.3f}) '
                         'Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) '
                         'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}) '
-                        'Loss_offset {offset_meter.val:.4f} ({offset_meter.avg:.4f}) '
-                        'Accuracy {accuracy:.4f}.'.format(i + 1, len(val_loader),
+                        'Loss_offset {offset_meter.val:.4f} ({offset_meter.avg:.4f}) '.format(i + 1, len(val_loader),
                                                           data_time=data_time,
                                                           batch_time=batch_time,
                                                           loss_meter=loss_meter,
-                                                          offset_meter=offset_meter,
-                                                          accuracy=accuracy))
+                                                          offset_meter=offset_meter))
 
-    iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
-    accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
-    mIoU = np.mean(iou_class)
-    mAcc = np.mean(accuracy_class)
-    allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
+    # iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    # accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
+    # mIoU = np.mean(iou_class)
+    # mAcc = np.mean(accuracy_class)
+    # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
     if main_process():
-        logger.info('Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(mIoU, mAcc, allAcc))
-        for i in range(args.classes):
-            logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
-        logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
+        logger.info('Val result: class_loss/offset_loss {:.4f}/{:.4f}.'.format(loss_meter.avg, offset_meter.avg))
+        # for i in range(args.classes):
+        #     logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
+        # logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
     
-    return loss_meter.avg, offset_meter.avg, mIoU, mAcc, allAcc
+    return loss_meter.avg, offset_meter.avg #, mIoU, mAcc, allAcc
 
 
 def validate_qualitative(args, epoch, val_loader, model, criterion, l1loss):
     if main_process():
         logger.info('>>>>>>>>>>>>>>>> Start Qualitative Evaluation >>>>>>>>>>>>>>>>')
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     model.eval()
     end = time.time()

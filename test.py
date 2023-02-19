@@ -145,8 +145,8 @@ def data_load_custom(data_path):
 
     idx_data = []
 
-    coord_min = np.min(coord, 0)
-    coord -= coord_min
+    # coord_min = np.min(coord, 0)
+    # coord -= coord_min
     idx_sort, count = voxelize(coord, args.voxel_size, mode=1)
     for i in range(count.max()):
         idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
