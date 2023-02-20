@@ -546,7 +546,7 @@ def instantiation_eval_face_only(path, name, samples, pred_offset, pred_labels):
 
 def instantiation_eval(path, name, samples, pred_offset, pred_labels):
     # instance segmentation based predicted offsets and labels
-    samples_trans = samples  + pred_offset
+    samples_trans = samples + pred_offset
     # samples_trans[pred_labels>5] = samples[pred_labels>5]
     cls_list, label_list = [], []
     inst_idx, indice_list = 0, []
@@ -557,10 +557,10 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         # save_obj_color_coding(os.path.join(path,'%s_%d_pts.obj' % (name, i)), pts_trans, np.ones(len(pts_trans))*i)
         if i<6:
             eps, min_samples, inpts = 0.1, 5, pts_trans # todo pts_ori vs pts_trans
-            thre = 5
+            thre = 50  # todo threshold 를 두는게 맞는건가?
         else:
-            eps, min_samples, inpts = 0.1, 5, pts_trans
-            thre = 5
+            eps, min_samples, inpts = 0.15, 3, pts_trans
+            thre = 20  # edge 는 특히 prediction이 어려움
         dbscan = DBSCAN(eps=eps, min_samples=min_samples).fit(inpts)
 
         instances = [pts_ori[dbscan.labels_ == j] for j in range(max(dbscan.labels_)+1) if len(pts_ori[dbscan.labels_ == j]) > thre]
@@ -581,6 +581,7 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         #             continue
         #         instances.append(np.asarray(cl.points))
 
+        # instance visualization
         # save_label = np.asarray([np.ones(len(item))*np.random.choice(29, 1) for k, (item) in enumerate(instances)])
         # save_obj_color_coding(os.path.join(path,'%s_cls_%d.obj'%(name, i)), np.vstack(instances), np.concatenate(save_label))
 
@@ -605,7 +606,7 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         if (len(f_list1)==0) or (len(f_list2)==0):
             continue
         # edge를 기준으로 가까운 face search
-        for e_supp in e_list:
+        for jj, e_supp in enumerate(e_list):
         #     # -----option1 just using single minimum point------
         #     dist1 = np.asarray([np.min(distance.cdist(e_supp, f_supp1)) for f_supp1 in f_list1])
         #     dist2 = np.asarray([np.min(distance.cdist(e_supp, f_supp2)) for f_supp2 in f_list2])
@@ -623,24 +624,28 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
 
             # ---option2 distance between sets------
             paired = []
-            for k, fsup in enumerate(f_list1):
-                dist1 = np.min(distance.cdist(e_supp, fsup), axis=1)
-                r = np.sum(dist1<0.1)/len(dist1)
+            for k, fsup1 in enumerate(f_list1):
+                dist1 = np.min(distance.cdist(e_supp, fsup1), axis=1)
+                r1 = np.sum(dist1<0.08)/len(dist1)  # edge가 얼마만큼 face에 붙어있는지?
                 # print(r)
-                if r > 0.4:
+                if r1 > 0.5:
                     paired.append(f_inst_id1[k])
                     break
-            for k, fsup in enumerate(f_list2):
-                dist2 = np.min(distance.cdist(e_supp, fsup), axis=1)
-                r = np.sum(dist2 < 0.1) / len(dist2)
-                if r > 0.4:
+            for k, fsup2 in enumerate(f_list2):
+                dist2 = np.min(distance.cdist(e_supp, fsup2), axis=1)
+                r2 = np.sum(dist2 < 0.08) / len(dist2)
+                if r2 > 0.5:
                     paired.append(f_inst_id2[k])
                     break
-            # --------------------------------------
+            # ------------------paired res viz--------------------
+            # if len(paired)==2:
+            #     tmp_coord = np.vstack((e_supp, fsup1, fsup2))
+            #     tmp_label = np.concatenate((0*np.ones(len(e_supp)), np.ones(len(fsup1)), 2*np.ones(len(fsup2))))
+            #     save_obj_color_coding('tmp/%d_%d.obj'%(cls_idx,jj), tmp_coord, tmp_label)
 
             if paired:
                 pair_list.append(paired)
-
+    # exit(0)
     print('number of paired list', len(pair_list))
     # tmp_list = list(itertools.chain(*cls_list))
     # for i, indices in enumerate(pair_list):
@@ -656,23 +661,31 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
     terminate = False
     final_pair_list=[]
     # while terminate is not True:
-    for m in range(len(pair_list)):
-        is_intersect = False
+    is_intersect = True
+    # while is_intersect:
+    for m in range(len(pair_list)+100):
+        # once_intersect = False
+        # is_intersect = True
         new_pair_list = []
         start = pair_list[0]
         pair_list = pair_list[1:]
 
         new_set = start
-        # compare start item and others
+        # compare start item with remained ones
         for pair in pair_list:
             intersect = set.intersection(set(start), set(pair))
             if intersect:
                 new_set = new_set + pair
-                is_intersect = True
+                # once_intersect = True
             else:
                 new_pair_list.append(pair)
         new_pair_list.append(list(set(new_set)))
         pair_list = new_pair_list
+
+        # intersection이 더이상 나오지 않을 시 terminate
+        # if once_intersect is not True:
+        #     is_intersect = False
+
     final_pair_list = pair_list
     #     if is_intersect is False:
     #         final_pair_list.append(pair_list[-1])

@@ -433,7 +433,7 @@ class Stratified(nn.Module):
         self.regressor = nn.Sequential(
             nn.Linear(channels[0], channels[0]),
             nn.BatchNorm1d(channels[0]),
-            nn.ReLU(inplace=True),
+            nn.Tanh(),
             nn.Linear(channels[0], 3)
         )
 
