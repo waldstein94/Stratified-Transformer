@@ -115,7 +115,8 @@ def main_worker(gpu, ngpus_per_node, argss):
     model = Stratified(args.downsample_scale, args.depths, args.channels, args.num_heads, args.window_size, \
         args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
         rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, num_classes=args.classes, \
-        ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
+        ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer,\
+                       activation=args.activation)
 
     
     # set loss func 
