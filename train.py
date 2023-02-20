@@ -395,9 +395,6 @@ def train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, sche
             writer.add_scalar('loss_offset_batch', offset_meter.val, current_iter)
         # torch.cuda.empty_cache()
 
-
-    if main_process():
-        logger.info('Train result at epoch [{}/{}]: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}.'.format(epoch+1, args.epochs, mIoU, mAcc, allAcc))
     return loss_meter.avg, offset_meter.avg  #, mIoU, mAcc, allAcc
 
 

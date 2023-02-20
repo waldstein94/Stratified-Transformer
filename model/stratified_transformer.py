@@ -432,6 +432,7 @@ class Stratified(nn.Module):
 
         if activation == 'Tanh':
             act_reg = nn.Tanh()
+            # print('Tanh')
         else:
             act_reg = nn.ReLU(inplace=True)
         self.regressor = nn.Sequential(
