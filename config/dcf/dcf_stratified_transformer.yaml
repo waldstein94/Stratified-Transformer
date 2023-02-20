@@ -3,14 +3,22 @@ DATA:
   data_root: [dataset/dcf_cuboid, dataset/dcf_polycube, dataset/dcf_scannet] # Fill in the pre-processed data path (which contains the 'train', 'val', 'test' directories)
   classes: 19
   fea_dim: 6
-  voxel_size: 0.02
+  voxel_size: 0.02   # todo
   voxel_max: 120000  # maximum number of input samples
   loop: 6 
 
 TRAIN:
   # arch
-  name: tmp # experiment name
+  name: voxel0.02_offsetw1_tanh_epoch200 # experiment name todo 
+  activation: Tanh
+  # gahye todo
+  edge_weight: 1.5  # edge weight for crossentropy
+  concave_weight: 5  # edge weight for crossentropy
+  offset_weight: 1  # weight for offset loss term
+  train_gpu: [7]  # todo [0, 1, 2, 3]
   train_continue: False
+  coord_move: True
+  
   arch: stratified_transformer
   stem_transformer: False
   use_xyz: True
@@ -45,10 +53,10 @@ TRAIN:
   warmup_ratio: 0.000001
   use_amp: True
   optimizer: AdamW #SGD
-  train_gpu: [0]  #[0, 1, 2, 3]
   workers: 0  # data loader workers
-  batch_size: 3 # batch size for training
-  batch_size_val: 2 # batch size for validation during training, memory and speed tradeoff
+  batch_size: 20 # batch size for training
+  batch_size_val: 10 # batch size for validation during training, memory and speed tradeoff
+  viz_size_val: 1
   base_lr: 0.006
   epochs: 100
   start_epoch: 0
@@ -58,16 +66,11 @@ TRAIN:
   weight_decay: 0.05
   drop_rate: 0.5
 
-  # gahye
-  edge_weight: 1.5  # edge weight for crossentropy
-  concave_weight: 5  # edge weight for crossentropy
-  offset_weight: 10  # weight for offset loss term
-
   ignore_label: -100 #255
   manual_seed: 123
   print_freq: 1
   save_freq: 9
-  save_path: runs/dcf_base #dcf_stratified_transformer  # corresponding to name
+  save_path: runs #dcf_stratified_transformer  # corresponding to name
   result_path: results #dcf_stratified_transformer  # corresponding to name
   weight: checkpoints # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
@@ -84,9 +87,9 @@ TEST:
   eval_data_path: eval_repo/eval_scannet_filter  # test data path (no label)
   data_root_val: data/dcf/test # Fill the path that contains the scenes of the validation set (e.g., "[YOUR PATH]/val")
   split: val  # split in [train, val and test]
-  test_gpu: [0]
+  test_gpu: [4] # todo 
   test_workers: 0
   batch_size_test: 1
   model_path: model_last.pth # Fill the path of the trained .pth file model
-  eval_folder: eval_scannet_filter # Fill the path to store the .npy files for each scene
+  eval_folder: eval_scannet_filter # todo 
   names_path: data/scannet/scannet_names.txt
