@@ -121,7 +121,10 @@ def main_worker(gpu, ngpus_per_node, argss):
     
     # set loss func 
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
-    l1loss = torch.nn.L1Loss().cuda()
+    if args.loss =='l1':
+        offsetloss = torch.nn.L1Loss().cuda()
+    else:
+        offsetloss = torch.nn.MSELoss().cuda()
 
     # set optimizer
     if args.optimizer == 'SGD':
@@ -265,7 +268,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         if main_process():
             logger.info("lr: {}".format(scheduler.get_last_lr()))
             
-        loss_train, loss_offset = train(train_loader, model, criterion, l1loss, optimizer, epoch, scaler, scheduler, args.name)
+        loss_train, loss_offset = train(train_loader, model, criterion, offsetloss, optimizer, epoch, scaler, scheduler, args.name)
 
         if args.scheduler_update == 'epoch':
             scheduler.step()

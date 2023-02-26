@@ -89,8 +89,12 @@ class DetectionMAP:
         for i, acc in enumerate(self.total_accumulators):
             # TP, FP, FN = DetectionMAP.compute_TP_FP_FN(pred_classes, gt_classes, pred_conf, IoU, i)
             TP, FP, FN = DetectionMAP.compute_TP_FP_FN(IoU)
+            print('current precision: ', len(TP) / (len(TP) + len(FP)))
+            print('current recall: ', len(TP) / (len(TP) + FN))
+
             acc.inc_predictions(TP, FP)
             acc.inc_not_predicted(FN)
+
             # todo add below line
             acc.precision.append(len(TP)/(len(TP)+len(FP)))
             acc.recall.append((len(TP)/(len(TP)+FN)))
@@ -341,6 +345,7 @@ class APAccumulator:
         self.predictions = []
         self.FN = 0
         self.TP = 0
+        self.FP = 0
 
         # todo gahye
         # for following up precision because gt boxes are partially annotated
@@ -356,6 +361,7 @@ class APAccumulator:
             self.TP += 1
         for fp in FP:
             self.predictions.append([fp, 0.0])
+            self.FP += 1
 
     def inc_not_predicted(self, value=1):
         self.FN += value

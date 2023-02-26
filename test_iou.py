@@ -144,6 +144,12 @@ def data_load_scannet(data_path):
         coord = coord[label!=f_idx]
         label = label[label!=f_idx]
 
+    max_pts = 100000
+    if len(coord) < max_pts:
+        max_pts = len(coord)
+    choices = np.random.choice(len(coord), max_pts, replace=False)
+    coord, label = coord[choices], label[choices]
+
     # remove outlier especially for scannet filter data
     dbscan = DBSCAN(eps=0.1, min_samples=5).fit(coord)
     coord = [coord[dbscan.labels_ == idx] for idx in range(dbscan.labels_.max() + 1) if
@@ -151,7 +157,7 @@ def data_load_scannet(data_path):
     coord = np.concatenate(coord)
 
     feat = np.ones(coord.shape)
-    bboxes =np.load(os.path.join(root_dir, name+'_bbox.npy'))
+    bboxes = np.load(os.path.join(root_dir, name+'_bbox.npy'))
     bbox_param, bbox_idx = bboxes[:, :-1], bboxes[:, -1:]
     # remove classes to be filtered
     bbox_param = bbox_param[(bbox_idx != filters).all(axis=1)]
@@ -233,6 +239,7 @@ def data_load(data_name):
         data_path = os.path.join(args.data_root, data_name + '.npy')
         data = np.load(data_path)  # xyzrgbl, N*7
         coord, feat, label = data[:, :3], data[:, 3:6], data[:, 6]
+
     elif args.data_name == 'scannetv2':
         data_path = os.path.join(args.data_root_val, data_name + '.pth')
         data = torch.load(data_path)  # xyzrgbl, N*7
@@ -266,9 +273,9 @@ def test(model):
     batch_time = AverageMeter()
     args.batch_size_test = 5
     mAP_CLASSIFICATION = Evaluate_metric(1, ignore_class=[0], overlap_threshold=0.25)
+    model.eval()
     # args.voxel_max = None
     with torch.no_grad():
-        model.eval()
 
         check_makedirs(os.path.join(args.result_path, args.name, args.eval_folder))
         data_list = data_prepare_custom()
@@ -283,7 +290,7 @@ def test(model):
 
             pred = torch.zeros((len(coord), args.classes)).cuda()
             pred_shift = torch.zeros((len(coord), 3)).cuda()
-
+            torch.cuda.empty_cache()
             idx_size = len(idx_data)
             idx_list, coord_list, feat_list, offset_list  = [], [], [], []
             for i in range(idx_size):
@@ -316,24 +323,24 @@ def test(model):
                 coord_part = torch.FloatTensor(np.concatenate(coord_part)).cuda(non_blocking=True)
                 feat_part = torch.FloatTensor(np.concatenate(feat_part)).cuda(non_blocking=True)
                 offset_part = torch.IntTensor(np.cumsum(offset_part)).cuda(non_blocking=True)
-                with torch.no_grad():
+                # with torch.no_grad():
 
-                    offset_ = offset_part.clone()
-                    offset_[1:] = offset_[1:] - offset_[:-1]
-                    batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long().cuda(non_blocking=True)
+                offset_ = offset_part.clone()
+                offset_[1:] = offset_[1:] - offset_[:-1]
+                batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long().cuda(non_blocking=True)
 
-                    sigma = 1.0
-                    radius = 2.5 * args.grid_size * sigma
-                    neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord_part, coord_part, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
-                    neighbor_idx = neighbor_idx.cuda(non_blocking=True)
+                sigma = 1.0
+                radius = 2.5 * args.grid_size * sigma
+                neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord_part, coord_part, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
+                neighbor_idx = neighbor_idx.cuda(non_blocking=True)
 
-                    if args.concat_xyz:
-                        feat_part = torch.cat([feat_part, coord_part], 1)
+                if args.concat_xyz:
+                    feat_part = torch.cat([feat_part, coord_part], 1)
 
-                    pred_part, shift_part = model(feat_part, coord_part, offset_part, batch, neighbor_idx)
-                    pred_part = F.softmax(pred_part, -1) # Add softmax
-
+                pred_part, shift_part = model(feat_part, coord_part, offset_part, batch, neighbor_idx)
+                pred_part = F.softmax(pred_part, -1) # Add softmax
                 torch.cuda.empty_cache()
+
                 pred[idx_part, :] += pred_part
                 pred_shift[idx_part, :] += shift_part
 
@@ -348,12 +355,17 @@ def test(model):
             save_obj_color_coding(cls_res_path, coord, pred)
             offset_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res_offset.obj')  # todo fix path
             save_obj_color_coding(offset_res_path, shift_coord, pred)
-            # exit(0)
+            exit(0)
             # instantiation
             inst_res_path = os.path.join(args.result_path, args.name, args.eval_folder)
             # mask = np.linalg.norm(pred_offset, axis=1) < 1
             # pts, pred_offset, pred = coord[mask], pred_offset[mask], pred[mask]
-            instances = instantiation_eval(inst_res_path, data_name, coord, pred_shift.cpu().numpy(), pred)
+            try:
+                instances = instantiation_eval(inst_res_path, data_name, coord, pred_shift.cpu().numpy(), pred)
+            except:
+                continue
+                print('fail to instantiation')
+
             if len(instances) < 2:
                 return
 
@@ -439,7 +451,7 @@ def test(model):
             except:
                 print('fail to save')
             # ------------------compute mAP (referred by 3D-SIS)------------------------------
-
+            torch.cuda.empty_cache()
             # gt_box = box_gt  # [x1,y1,z1, x2, y2, z2]: shape [n_gt, 6]
             # gt_class = blobs['gt_box'][0][:, 6].numpy()
             # pred_box = clip_boxes(pred_box, net._scene_info[:3]).numpy()  # [x1,y1,z1,x2,y2,z2]: shape [n_pred, 6]
@@ -451,26 +463,40 @@ def test(model):
             #         sort_index.append(True)
             #     else:
             #         sort_index.append(False)
-            try:
-                mAP_CLASSIFICATION.evaluate(
-                    pred_box, #[sort_index],
-                    # pred_class, #[sort_index],
-                    # pred_conf, #[sort_index],
-                    gt_box) #,
-                    # gt_class)
-                mAP_CLASSIFICATION.finalize_precision()
-                mAP_CLASSIFICATION.finalize_recall()
-                print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
-                print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
-            except:
-                print('fail to compute AP')
+            # try:
+            mAP_CLASSIFICATION.evaluate(
+                pred_box, #[sort_index],
+                # pred_class, #[sort_index],
+                # pred_conf, #[sort_index],
+                gt_box) #,
+                # gt_class)
+            # mAP_CLASSIFICATION.finalize_precision()
+            # mAP_CLASSIFICATION.finalize_recall()
+            # print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+            # print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
+            TP = mAP_CLASSIFICATION.total_accumulators[0].TP
+            FP = mAP_CLASSIFICATION.total_accumulators[0].FP
+            FN = mAP_CLASSIFICATION.total_accumulators[0].FN
+            print('accumulated precision: ', TP / (TP + FP))
+            print('accumulated recall: ', TP / (TP + FN))
+            # except:
+            #     print('fail to compute AP')
 
         # detected 된 전체 box/ gt 에서 값 추출
-        mAP_CLASSIFICATION.finalize()
-        mAP_CLASSIFICATION.finalize_precision()
-        print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
-        print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
-        print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
+        TP = mAP_CLASSIFICATION.total_accumulators[0].TP
+        FP = mAP_CLASSIFICATION.total_accumulators[0].FP
+        FN = mAP_CLASSIFICATION.total_accumulators[0].FN
+        print('final precision: ', TP / (TP + FP))
+        print('final recall: ', TP / (TP + FN))
+
+        # mAP_CLASSIFICATION.finalize()
+        # mAP_CLASSIFICATION.finalize_precision()
+        #
+        # print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
+        # print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+        # print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
+
+
         # for class_ind in range(cfg.NUM_CLASSES):
         #     if class_ind not in mAP_CLASSIFICATION.ignore_class:
         #         print('class {}: {}'.format(class_ind, mAP_CLASSIFICATION.AP(class_ind)))

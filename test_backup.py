@@ -19,9 +19,18 @@ from util.voxelize import voxelize
 import torch_points_kernels as tp
 import torch.nn.functional as F
 
+from util import iostream
 random.seed(123)
 np.random.seed(123)
 
+
+
+def save_obj_color_coding(out, samples, labels):
+    with open(out, 'w') as file:
+        for (v, l) in zip(samples, labels):
+            c = CUBOID_COLOR_MAP[l]
+            file.write(
+                'v %.4f %.4f %.4f %.4f %.4f %.4f\n' % (v[0], v[1], v[2], c[0], c[1], c[2]))
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Classification / Semantic Segmentation')
@@ -58,7 +67,7 @@ def main():
     # get model
     if args.arch == 'stratified_transformer':
         
-        from model.stratified_transformer import Stratified
+        from model.stratified_transformer_backup import Stratified
 
         args.patch_size = args.grid_size * args.patch_size
         args.window_size = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
@@ -93,7 +102,8 @@ def main():
     #model = torch.nn.DataParallel(model.cuda())
     logger.info(model)
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
-    names = [line.rstrip('\n') for line in open(args.names_path)]
+    # names = [line.rstrip('\n') for line in open(args.names_path)]
+    names = None
     if os.path.isfile(args.model_path):
         logger.info("=> loading checkpoint '{}'".format(args.model_path))
         checkpoint = torch.load(args.model_path)
@@ -146,9 +156,11 @@ def main():
 
 
 def data_prepare():
+    import glob
     if args.data_name == 's3dis':
-        data_list = sorted(os.listdir(args.data_root))
-        data_list = [item[:-4] for item in data_list if 'Area_{}'.format(args.test_area) in item]
+        data_list = glob.glob(os.path.join(args.eval_data_path, '*'))
+        # data_list = sorted(os.listdir(args.data_root))
+        # data_list = [item[:-4] for item in data_list if 'Area_{}'.format(args.test_area) in item]
     elif args.data_name == 'scannetv2':
         data_list = sorted(os.listdir(args.data_root_val))
         data_list = [item[:-4] for item in data_list if '.pth' in item]
@@ -159,17 +171,19 @@ def data_prepare():
     return data_list
 
 
-def data_load(data_name, transform):
+def data_load(data_name, transform=None):
 
     if args.data_name == 's3dis':
-        data_path = os.path.join(args.data_root, data_name + '.npy')
+        data_path = os.path.join(data_name )
         data = np.load(data_path)  # xyzrgbl, N*7
-        coord, feat, label = data[:, :3], data[:, 3:6], data[:, 6]
+        coord, feat  = data[:, :3], data[:, 3:6] #, data[:, 6]
+        label = None
     elif args.data_name == 'scannetv2':
         data_path = os.path.join(args.data_root_val, data_name + '.pth')
         data = torch.load(data_path)  # xyzrgbl, N*7
         coord, feat, label = data[0], data[1], data[2]
         # print("type(coord): {}".format(type(coord)))
+
 
     if transform:
         coord, feat = transform(coord, feat)
@@ -213,78 +227,91 @@ def test(model, criterion, names, test_transform_set):
         end = time.time()
         pred_save_path = os.path.join(args.save_folder, '{}_{}_pred.npy'.format(item, args.epoch))
         label_save_path = os.path.join(args.save_folder, '{}_{}_label.npy'.format(item, args.epoch))
-        
-        if os.path.isfile(pred_save_path) and os.path.isfile(label_save_path):
-            logger.info('{}/{}: {}, loaded pred and label.'.format(idx + 1, len(data_list), item))
-            pred, label = np.load(pred_save_path), np.load(label_save_path)
-        else:
+        #
+        # if os.path.isfile(pred_save_path) and os.path.isfile(label_save_path):
+        #     logger.info('{}/{}: {}, loaded pred and label.'.format(idx + 1, len(data_list), item))
+        #     pred, label = np.load(pred_save_path), np.load(label_save_path)
+        # else:
             # ensemble output
-            pred_all = 0
-            for aug_id in range(len(test_transform_set)):
-                test_transform = test_transform_set[aug_id]
-                    
-                if os.path.isfile(pred_save_path) and os.path.isfile(label_save_path):
-                    logger.info('{}/{}: {}, loaded pred and label.'.format(idx + 1, len(data_list), item))
-                    pred, label = np.load(pred_save_path), np.load(label_save_path)
-                else:
-                    coord, feat, label, idx_data = data_load(item, test_transform)
-                    pred = torch.zeros((label.size, args.classes)).cuda()
-                    idx_size = len(idx_data)
-                    idx_list, coord_list, feat_list, offset_list  = [], [], [], []
-                    for i in range(idx_size):
-                        logger.info('{}/{}: {}/{}/{}, {}'.format(idx + 1, len(data_list), i + 1, idx_size, idx_data[0].shape[0], item))
-                        idx_part = idx_data[i]
-                        coord_part, feat_part = coord[idx_part], feat[idx_part]
-                        if args.voxel_max and coord_part.shape[0] > args.voxel_max:
-                            coord_p, idx_uni, cnt = np.random.rand(coord_part.shape[0]) * 1e-3, np.array([]), 0
-                            while idx_uni.size != idx_part.shape[0]:
-                                init_idx = np.argmin(coord_p)
-                                dist = np.sum(np.power(coord_part - coord_part[init_idx], 2), 1)
-                                idx_crop = np.argsort(dist)[:args.voxel_max]
-                                coord_sub, feat_sub, idx_sub = coord_part[idx_crop], feat_part[idx_crop], idx_part[idx_crop]
-                                dist = dist[idx_crop]
-                                delta = np.square(1 - dist / np.max(dist))
-                                coord_p[idx_crop] += delta
-                                coord_sub, feat_sub = input_normalize(coord_sub, feat_sub)
-                                idx_list.append(idx_sub), coord_list.append(coord_sub), feat_list.append(feat_sub), offset_list.append(idx_sub.size)
-                                idx_uni = np.unique(np.concatenate((idx_uni, idx_sub)))
-                                # cnt += 1; logger.info('cnt={}, idx_sub/idx={}/{}'.format(cnt, idx_uni.size, idx_part.shape[0]))
-                        else:
-                            coord_part, feat_part = input_normalize(coord_part, feat_part)
-                            idx_list.append(idx_part), coord_list.append(coord_part), feat_list.append(feat_part), offset_list.append(idx_part.size)
-                    batch_num = int(np.ceil(len(idx_list) / args.batch_size_test))
-                    for i in range(batch_num):
-                        s_i, e_i = i * args.batch_size_test, min((i + 1) * args.batch_size_test, len(idx_list))
-                        idx_part, coord_part, feat_part, offset_part = idx_list[s_i:e_i], coord_list[s_i:e_i], feat_list[s_i:e_i], offset_list[s_i:e_i]
-                        idx_part = np.concatenate(idx_part)
-                        coord_part = torch.FloatTensor(np.concatenate(coord_part)).cuda(non_blocking=True)
-                        feat_part = torch.FloatTensor(np.concatenate(feat_part)).cuda(non_blocking=True)
-                        offset_part = torch.IntTensor(np.cumsum(offset_part)).cuda(non_blocking=True)
-                        with torch.no_grad():
-                            
-                            offset_ = offset_part.clone()
-                            offset_[1:] = offset_[1:] - offset_[:-1]
-                            batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long().cuda(non_blocking=True)
+        pred_all = 0
+        # for aug_id in range(len(test_transform_set)):
+        #     test_transform = test_transform_set[aug_id]
+        with torch.no_grad():
+            if os.path.isfile(pred_save_path) and os.path.isfile(label_save_path):
+                logger.info('{}/{}: {}, loaded pred and label.'.format(idx + 1, len(data_list), item))
+                pred, label = np.load(pred_save_path), np.load(label_save_path)
+            else:
+                coord, feat, label, idx_data = data_load(item)
+                pred = torch.zeros((len(coord), args.classes)).cuda()
+                idx_size = len(idx_data)
+                idx_list, coord_list, feat_list, offset_list  = [], [], [], []
+                for i in range(idx_size):
+                    logger.info('{}/{}: {}/{}/{}, {}'.format(idx + 1, len(data_list), i + 1, idx_size, idx_data[0].shape[0], item))
+                    idx_part = idx_data[i]
+                    coord_part, feat_part = coord[idx_part], feat[idx_part]
+                    if args.voxel_max and coord_part.shape[0] > args.voxel_max:
+                        coord_p, idx_uni, cnt = np.random.rand(coord_part.shape[0]) * 1e-3, np.array([]), 0
+                        while idx_uni.size != idx_part.shape[0]:
+                            init_idx = np.argmin(coord_p)
+                            dist = np.sum(np.power(coord_part - coord_part[init_idx], 2), 1)
+                            idx_crop = np.argsort(dist)[:args.voxel_max]
+                            coord_sub, feat_sub, idx_sub = coord_part[idx_crop], feat_part[idx_crop], idx_part[idx_crop]
+                            dist = dist[idx_crop]
+                            delta = np.square(1 - dist / np.max(dist))
+                            coord_p[idx_crop] += delta
+                            coord_sub, feat_sub = input_normalize(coord_sub, feat_sub)
+                            idx_list.append(idx_sub), coord_list.append(coord_sub), feat_list.append(feat_sub), offset_list.append(idx_sub.size)
+                            idx_uni = np.unique(np.concatenate((idx_uni, idx_sub)))
+                            # cnt += 1; logger.info('cnt={}, idx_sub/idx={}/{}'.format(cnt, idx_uni.size, idx_part.shape[0]))
+                    else:
+                        coord_part, feat_part = input_normalize(coord_part, feat_part)
+                        idx_list.append(idx_part), coord_list.append(coord_part), feat_list.append(feat_part), offset_list.append(idx_part.size)
+                batch_num = int(np.ceil(len(idx_list) / args.batch_size_test))
+                for i in range(batch_num):
+                    s_i, e_i = i * args.batch_size_test, min((i + 1) * args.batch_size_test, len(idx_list))
+                    idx_part, coord_part, feat_part, offset_part = idx_list[s_i:e_i], coord_list[s_i:e_i], feat_list[s_i:e_i], offset_list[s_i:e_i]
+                    idx_part = np.concatenate(idx_part)
+                    coord_part = torch.FloatTensor(np.concatenate(coord_part)).cuda(non_blocking=True)
+                    feat_part = torch.FloatTensor(np.concatenate(feat_part)).cuda(non_blocking=True)
+                    offset_part = torch.IntTensor(np.cumsum(offset_part)).cuda(non_blocking=True)
 
-                            sigma = 1.0
-                            radius = 2.5 * args.grid_size * sigma
-                            neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord_part, coord_part, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
-                            neighbor_idx = neighbor_idx.cuda(non_blocking=True)
 
-                            if args.concat_xyz:
-                                feat_part = torch.cat([feat_part, coord_part], 1)
+                    offset_ = offset_part.clone()
+                    offset_[1:] = offset_[1:] - offset_[:-1]
+                    batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long().cuda(non_blocking=True)
 
-                            pred_part = model(feat_part, coord_part, offset_part, batch, neighbor_idx)
-                            pred_part = F.softmax(pred_part, -1) # Add softmax
+                    sigma = 1.0
+                    radius = 2.5 * args.grid_size * sigma
+                    neighbor_idx = tp.ball_query(radius, args.max_num_neighbors, coord_part, coord_part, mode="partial_dense", batch_x=batch, batch_y=batch)[0]
+                    neighbor_idx = neighbor_idx.cuda(non_blocking=True)
 
-                        # torch.cuda.empty_cache()
-                        pred[idx_part, :] += pred_part
-                        logger.info('Test: {}/{}, {}/{}, {}/{}, {}/{}'.format(aug_id+1, len(test_transform_set), idx + 1, len(data_list), e_i, len(idx_list), args.voxel_max, idx_part.shape[0]))
-                pred = pred / (pred.sum(-1)[:, None]+1e-8)
-                pred_all += pred
-            pred = pred_all / len(test_transform_set)
-            loss = criterion(pred, torch.LongTensor(label).cuda(non_blocking=True))  # for reference
+                    if args.concat_xyz:
+                        feat_part = torch.cat([feat_part, coord_part], 1)
+
+                    pred_part = model(feat_part, coord_part, offset_part, batch, neighbor_idx)
+                    pred_part = F.softmax(pred_part, -1) # Add softmax
+
+                    # torch.cuda.empty_cache()
+                    pred[idx_part, :] += pred_part
+                # logger.info('Test: {}/{}, {}/{}, {}/{}, {}/{}'.format(aug_id+1, len(test_transform_set), idx + 1, len(data_list), e_i, len(idx_list), args.voxel_max, idx_part.shape[0]))
+                # pred = pred / (pred.sum(-1)[:, None]+1e-8)
+                # pred_all += pred
+            # pred = pred_all / len(test_transform_set)
+            # loss = criterion(pred, torch.LongTensor(label).cuda(non_blocking=True))  # for reference
             pred = pred.max(1)[1].data.cpu().numpy()
+
+            # remove layout and save it
+            if args.eval_type == 'scannet':
+                filter = [1, 2, 8, 9]
+            elif args.eval_type == 's3dis':
+                filter = [1, 2, 22]
+            for f_idx in filter:
+                coord = coord[pred != f_idx]
+                pred = pred[pred != f_idx]
+
+            save_obj_color_coding('layout_rm/%s.obj'%names, coord, pred)
+
+            exit(0)
 
         # calculation 1: add per room predictions
         intersection, union, target = intersectionAndUnion(pred, label, args.classes, args.ignore_label)

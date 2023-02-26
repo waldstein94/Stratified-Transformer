@@ -546,24 +546,25 @@ def instantiation_eval_face_only(path, name, samples, pred_offset, pred_labels):
 
 def instantiation_eval(path, name, samples, pred_offset, pred_labels):
     # instance segmentation based predicted offsets and labels
-    samples_trans = samples + pred_offset
+    samples_trans = samples  + pred_offset
     # samples_trans[pred_labels>5] = samples[pred_labels>5]
     cls_list, label_list = [], []
     inst_idx, indice_list = 0, []
-    for i in range(max(pred_labels)+1):
+    for i in range(max(pred_labels) + 1):
         index_list = []
         pts_trans = samples_trans[pred_labels == i]
         pts_ori = samples[pred_labels == i]
         # save_obj_color_coding(os.path.join(path,'%s_%d_pts.obj' % (name, i)), pts_trans, np.ones(len(pts_trans))*i)
-        if i<6:
-            eps, min_samples, inpts = 0.1, 5, pts_trans # todo pts_ori vs pts_trans
-            thre = 50  # todo threshold 를 두는게 맞는건가?
+        if i < 6:
+            eps, min_samples, inpts = 0.1, 5, pts_trans  # todo pts_ori vs pts_trans
+            thre = 0
         else:
-            eps, min_samples, inpts = 0.15, 3, pts_trans
-            thre = 20  # edge 는 특히 prediction이 어려움
+            eps, min_samples, inpts = 0.1, 3, pts_trans
+            thre = 0
         dbscan = DBSCAN(eps=eps, min_samples=min_samples).fit(inpts)
 
-        instances = [pts_ori[dbscan.labels_ == j] for j in range(max(dbscan.labels_)+1) if len(pts_ori[dbscan.labels_ == j]) > thre]
+        instances = [pts_ori[dbscan.labels_ == j] for j in range(max(dbscan.labels_) + 1) if
+                     len(pts_ori[dbscan.labels_ == j]) > thre]
 
         # NOTE; tried to remove outliers but differences in density between edge and face does not allow to set hyper parameters properly
         # instances = []
@@ -581,91 +582,84 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         #             continue
         #         instances.append(np.asarray(cl.points))
 
-        # instance visualization
-        # save_label = np.asarray([np.ones(len(item))*np.random.choice(29, 1) for k, (item) in enumerate(instances)])
-        # save_obj_color_coding(os.path.join(path,'%s_cls_%d.obj'%(name, i)), np.vstack(instances), np.concatenate(save_label))
+        # [save_obj_color_coding(os.path.join(path, '%s_%d_%d_instance.obj' % (name, i, k)), item, np.ones(len(item))*np.random.choice(29, 1)) for k, (item) in enumerate(instances) if i<6 ]
 
         cls_list.append(instances)
         for k in range(len(instances)):
             index_list.append(inst_idx)
             inst_idx += 1
         indice_list.append(index_list)
-    # exit(0)
 
+    # exit(0)
     # build face-edge-face connections based on spatial relation between face and edge
-    f_cls_list, e_cls_list = cls_list[:6], cls_list[6:]
-    print('name', name, 'len of f', len(list(itertools.chain(*f_cls_list))), 'len of e', len(list(itertools.chain(*e_cls_list))))
+    f_cls_list, e_cls_list = cls_list[:6], cls_list[6:18]
+    f_ind_list, e_ind_list = indice_list[:6], indice_list[6:18]
+    print('name', name, 'len of f', len(list(itertools.chain(*f_cls_list))), 'len of e',
+          len(list(itertools.chain(*e_cls_list))))
     pair_list = []
     # adjacent face indices along edge index
     lookup_face = [[0, 1], [0, 2], [1, 2], [0, 3], [1, 3], [0, 4], [2, 4], [3, 4], [1, 5], [2, 5], [3, 5], [4, 5]]
-    for cls_idx, e_list in enumerate(e_cls_list[:12]):
+    for cls_idx, (ei_list, e_list) in enumerate(zip(e_ind_list, e_cls_list[:12])):
         # f_idx1, f_idx2의 face instances에 대해 edge instance와 connection 만들기 based on euclidean distance
         f_idx1, f_idx2 = lookup_face[cls_idx][0], lookup_face[cls_idx][1]
         f_list1, f_list2 = f_cls_list[f_idx1], f_cls_list[f_idx2]
         f_inst_id1, f_inst_id2 = indice_list[f_idx1], indice_list[f_idx2]
-        if (len(f_list1)==0) or (len(f_list2)==0):
+        # save_obj('tmp_0edg.obj', np.vstack(e_list)), save_obj('tmp_0face.obj', np.vstack(f_list1)), save_obj('tmp_1face.obj', np.vstack(f_list2))
+        if (len(f_list1) == 0) or (len(f_list2) == 0):
             continue
         # edge를 기준으로 가까운 face search
-        for jj, e_supp in enumerate(e_list):
-        #     # -----option1 just using single minimum point------
-        #     dist1 = np.asarray([np.min(distance.cdist(e_supp, f_supp1)) for f_supp1 in f_list1])
-        #     dist2 = np.asarray([np.min(distance.cdist(e_supp, f_supp2)) for f_supp2 in f_list2])
-        #     min_dist1, min_dist_idx1 = np.min(dist1), np.argmin(dist1)
-        #     min_dist2, min_dist_idx2 = np.min(dist2), np.argmin(dist2)
-        #     paired = []
-        #     # if closest face, save its instance id
-        #     if min_dist1 < 0.2:
-        #         paired.append(f_inst_id1[min_dist_idx1])
-        #         # paired.append(e_supp)
-        #     if min_dist2 < 0.2:
-        #         paired.append(f_inst_id2[min_dist_idx2])
-        #         # paired.append(e_supp)
-            #-----------------------------------------------
+        for (e_idx, e_supp) in zip(ei_list, e_list):
+            #     # -----option1 just using single minimum point------
+            #     dist1 = np.asarray([np.min(distance.cdist(e_supp, f_supp1)) for f_supp1 in f_list1])
+            #     dist2 = np.asarray([np.min(distance.cdist(e_supp, f_supp2)) for f_supp2 in f_list2])
+            #     min_dist1, min_dist_idx1 = np.min(dist1), np.argmin(dist1)
+            #     min_dist2, min_dist_idx2 = np.min(dist2), np.argmin(dist2)
+            #     paired = []
+            #     # if closest face, save its instance id
+            #     if min_dist1 < 0.2:
+            #         paired.append(f_inst_id1[min_dist_idx1])
+            #         # paired.append(e_supp)
+            #     if min_dist2 < 0.2:
+            #         paired.append(f_inst_id2[min_dist_idx2])
+            #         # paired.append(e_supp)
+            # -----------------------------------------------
 
             # ---option2 distance between sets------
+            # todo max num으로 뽑기
             paired = []
-            for k, fsup1 in enumerate(f_list1):
-                dist1 = np.min(distance.cdist(e_supp, fsup1), axis=1)
-                r1 = np.sum(dist1<0.08)/len(dist1)  # edge가 얼마만큼 face에 붙어있는지?
+            max_r, pair1 = 0, None
+            for k, fsup in enumerate(f_list1):
+                dist1 = np.min(distance.cdist(e_supp, fsup), axis=1)
+                r = np.sum(dist1 < 0.1) / len(dist1)  # 0.1
                 # print(r)
-                if r1 > 0.5:
-                    paired.append(f_inst_id1[k])
-                    break
-            for k, fsup2 in enumerate(f_list2):
-                dist2 = np.min(distance.cdist(e_supp, fsup2), axis=1)
-                r2 = np.sum(dist2 < 0.08) / len(dist2)
-                if r2 > 0.5:
-                    paired.append(f_inst_id2[k])
-                    break
-            # ------------------paired res viz--------------------
-            # if len(paired)==2:
-            #     tmp_coord = np.vstack((e_supp, fsup1, fsup2))
-            #     tmp_label = np.concatenate((0*np.ones(len(e_supp)), np.ones(len(fsup1)), 2*np.ones(len(fsup2))))
-            #     save_obj_color_coding('tmp/%d_%d.obj'%(cls_idx,jj), tmp_coord, tmp_label)
+                if r > 0.3 and r > max_r:  # 0.5
+                    pair1 = f_inst_id1[k]
+                    # paired.append(f_inst_id1[k])
+                    max_r = r
 
+            max_r, pair2 = 0, None
+            for k, fsup in enumerate(f_list2):
+                dist2 = np.min(distance.cdist(e_supp, fsup), axis=1)
+                r = np.sum(dist2 < 0.1) / len(dist2)  # 0.1
+                if r > 0.3 and r > max_r:  # 0.5
+                    pair2 = f_inst_id2[k]
+                    max_r = r
+                    # paired.append(f_inst_id2[k])
+                    # break
+            # --------------------------------------
+
+            if pair1 is not None:
+                paired.append(pair1)
+            if pair2 is not None:
+                paired.append(pair2)
             if paired:
+                paired.append(e_idx)  # add edge index
                 pair_list.append(paired)
+
     # exit(0)
     print('number of paired list', len(pair_list))
-    # tmp_list = list(itertools.chain(*cls_list))
-    # for i, indices in enumerate(pair_list):
-    #     if len(indices) == 2:
-    #         pts = np.vstack((tmp_list[indices[0]], tmp_list[indices[1]]))
-    #     else:
-    #         pts = tmp_list[indices[0]]
-    #     pts = np.vstack((pts, indices[1]))
-    #     clr = np.ones(len(pts)) * (i%28)
-    #     save_obj_color_coding(os.path.join(path,'%s_%d_paired.obj' % (name, i )), pts, clr)
-    # exit(0)
-    # merging pairs using set.intersection(set1, set2)
-    terminate = False
-    final_pair_list=[]
-    # while terminate is not True:
-    is_intersect = True
-    # while is_intersect:
+
     for m in range(len(pair_list)+100):
-        # once_intersect = False
-        # is_intersect = True
         new_pair_list = []
         start = pair_list[0]
         pair_list = pair_list[1:]
@@ -682,32 +676,11 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         new_pair_list.append(list(set(new_set)))
         pair_list = new_pair_list
 
-        # intersection이 더이상 나오지 않을 시 terminate
-        # if once_intersect is not True:
-        #     is_intersect = False
-
     final_pair_list = pair_list
-    #     if is_intersect is False:
-    #         final_pair_list.append(pair_list[-1])
-    #         pair_list.pop(-1)
-
-        # terminate condition
-        # if len(pair_list) == 1:
-        #     final_pair_list.append(pair_list[0])
-        #     terminate = True
-
-    #         pcd = o3d.geometry.PointCloud()
-    #         pcd.points = o3d.utility.Vector3dVector(pts)
-    #         pcd = pcd.voxel_down_sample(voxel_size=0.02)
-    #         # cl, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=0.01)
-    #         cl, ind = pcd.remove_radius_outlier(nb_points=3, radius=0.1)
-    #         if len(cl.points)<20:
-    #             continue
-    #         instances.append(np.asarray(cl.points))
-
 
     box_supp_list = []
-    item_flatten = list(itertools.chain(*cls_list[:6]))
+    # item_flatten = list(itertools.chain(*cls_list[:6]))
+    item_flatten = list(itertools.chain(*cls_list[:18]))
     for i, pair_indices in enumerate(final_pair_list):
         # if len(pair_indices) ==1:
         #     continue
@@ -715,24 +688,16 @@ def instantiation_eval(path, name, samples, pred_offset, pred_labels):
         # outlier removal
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(supps)
-        pcd = pcd.voxel_down_sample(voxel_size=0.04)
+        pcd = pcd.voxel_down_sample(voxel_size=0.02)
         cl, ind = pcd.remove_radius_outlier(nb_points=3, radius=0.1)
         supps = np.asarray(cl.points)
 
-        if len(supps)==0:
+        if len(supps) < 20:
             continue
 
-        #----todo: concave check based on occupancy ratio in projected space-----------
-        # not that good
-        # unit = 0.1
-        # pts2d = (supps[:, :2] // unit).astype(int)
-        # minx, miny, maxx, maxy = np.min(pts2d[:, 0]), np.min(pts2d[:, 1]), np.max(pts2d[:, 0]), np.max(pts2d[:, 1])
-        # nomi, denomi = len(np.unique(pts2d, axis=0)), (maxx - minx) * (maxy - miny)
-        # print('ratio ', nomi / denomi)
-        #--------------------------------------------------------------------------------
         box_supp_list.append(supps)
 
-        # save_obj_color_coding(os.path.join(path, '%s_objsupp_%d.obj' % (name, i)), supps, np.ones(len(supps))*(i%20))
+    # save_obj_color_coding(os.path.join(path, '%s_objsupp_%d.obj' % (name, i)), supps, np.ones(len(supps))*(i%20))
 
     return box_supp_list
 

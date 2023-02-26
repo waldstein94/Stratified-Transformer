@@ -128,19 +128,21 @@ def data_load_custom(data_path):
 
     print(data_path)
     # todo preprocess - alignment with principal axis, translation with zero center, scale [-3,3]
-    if 'cube' not in data_path:
-        obb = trimesh.Trimesh(samples).bounding_box_oriented
-        delta = -1.5 - np.min(samples, axis=0)[2]
-        centroid = obb.centroid.copy()
-        centroid[2] = -delta
-        samples = samples - centroid
-
-        egien_v = obb.principal_inertia_vectors.copy()
-        if 'scannet' in data_path:
-            samples = np.matmul(egien_v, samples.T)
-            samples = samples.T
-
-    save_obj(os.path.join('tmp', data_path.split('/')[-1].split('.')[0] + '.obj'), samples)
+    # if 'cube' not in data_path:
+    #     obb = trimesh.Trimesh(samples).bounding_box_oriented
+    #     delta = -1.5 - np.min(samples, axis=0)[2]
+    #     centroid = obb.centroid.copy()
+    #     centroid[2] = -delta
+    #     samples = samples - centroid
+    #
+    #     egien_v = obb.principal_inertia_vectors.copy()
+    #     if 'scannet' in data_path:
+    #         samples = np.matmul(egien_v, samples.T)
+    #         samples = samples.T
+    if args.coord_move:
+        coord_min = np.min(samples,0)
+        samples-=coord_min
+    # save_obj(os.path.join('tmp', data_path.split('/')[-1].split('.')[0] + '.obj'), samples)
     coord, feat = samples, colors
 
     idx_data = []
@@ -222,7 +224,7 @@ def test(model):
                         dist = dist[idx_crop]
                         delta = np.square(1 - dist / np.max(dist))
                         coord_p[idx_crop] += delta
-                        coord_sub, feat_sub = input_normalize(coord_sub, feat_sub)
+                        coord_sub, feat_sub  = input_normalize(coord_sub, feat_sub)
                         idx_list.append(idx_sub), coord_list.append(coord_sub), feat_list.append(feat_sub), offset_list.append(idx_sub.size)
                         idx_uni = np.unique(np.concatenate((idx_uni, idx_sub)))
                         # cnt += 1; logger.info('cnt={}, idx_sub/idx={}/{}'.format(cnt, idx_uni.size, idx_part.shape[0]))
@@ -268,7 +270,7 @@ def test(model):
             save_obj_color_coding(cls_res_path, coord, pred)
             offset_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res_offset.obj')  # todo fix path
             save_obj_color_coding(offset_res_path, shift_coord, pred)
-
+            exit(0)
             # instantiation
             inst_res_path = os.path.join(args.result_path, args.name, args.eval_folder)
             # mask = np.linalg.norm(pred_offset, axis=1) < 1
