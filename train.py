@@ -281,8 +281,8 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
-            validate_qualitative(args, epoch, val_viz_loader, model, criterion, l1loss)
-            loss_val, loss_offset  = validate(val_loader, model, criterion, l1loss)
+            validate_qualitative(args, epoch, val_viz_loader, model, criterion, offsetloss)
+            loss_val, loss_offset  = validate(val_loader, model, criterion, offsetloss)
 
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
