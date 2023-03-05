@@ -270,15 +270,16 @@ def test(model):
             save_obj_color_coding(cls_res_path, coord, pred)
             offset_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res_offset.obj')  # todo fix path
             save_obj_color_coding(offset_res_path, shift_coord, pred)
-            exit(0)
+            # exit(0)
             # instantiation
             inst_res_path = os.path.join(args.result_path, args.name, args.eval_folder)
             # mask = np.linalg.norm(pred_offset, axis=1) < 1
             # pts, pred_offset, pred = coord[mask], pred_offset[mask], pred[mask]
-            instances = instantiation_eval(inst_res_path, data_name, coord, pred_shift.cpu().numpy(), pred)
-            if len(instances) < 2:
+            instances, polycubes = instantiation_eval_v2(data_name, coord, pred_shift.cpu().numpy(), pred)
+            if len(instances) < 1:
                 return
-
+            # continue
+            # exit(0)
             # save instances before merging
             for k, inst in enumerate(instances):
                 o3d_pts = o3d.geometry.PointCloud()

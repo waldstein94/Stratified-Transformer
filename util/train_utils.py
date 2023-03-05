@@ -1,9 +1,12 @@
 import os
+import random
+
 import torch
 import numpy as np
 import itertools
 # import trimesh
 import open3d as o3d
+import trimesh
 
 #import MinkowskiEngine as ME
 from sklearn.cluster import DBSCAN
@@ -11,6 +14,7 @@ from scipy.spatial import distance
 
 from util.iostream import *
 
+from scipy.spatial.transform import Rotation as R
 
 def adjust_learning_rate(optimizer, epoch, lr, schedule, gamma):
     """Sets the learning rate to the initial LR decayed by schedule"""
@@ -56,7 +60,6 @@ def calc_error(opt, net, cuda, test_data_loader, num_test):
             offset_arr.append(item_offset)
             error_arr.append(error[masks].mean().item())
     return np.average(offset_arr), np.average(error_arr)
-
 
 
 def viz_classification(opt, net, cuda, test_data_loader, num_test=1, epoch=0):
@@ -110,7 +113,7 @@ def instantiation(opt, net, cuda, test_dataset, num_test=1, epoch=0):
 
         dbscan = DBSCAN(eps=0.05, min_samples=3).fit(pts_trans)
         instances = [pts_ori[dbscan.labels_ == j] for j in range(max(dbscan.labels_)+1)]
-        [save_obj_color_coding('tmp/%d_%d_instance.obj' % (i, k), item, np.ones(len(item))*k) for k, (item) in enumerate(instances)]
+        # [save_obj_color_coding('tmp/%d_%d_instance.obj' % (i, k), item, np.ones(len(item))*k) for k, (item) in enumerate(instances)]
 
         cls_list.append(instances)
         for k in range(len(instances)):
@@ -542,6 +545,721 @@ def instantiation_eval_face_only(path, name, samples, pred_offset, pred_labels):
     # exit(0)
     return box_supp_list
 
+def generate_segment(coord, offset, label):
+    # density based clustering for each class to generate segments
+    cls_seg_list, cls_segId_list, cls_list, inst_idx = [], [], [], 0
+
+    coord_shift = coord + offset
+    for cls in range(max(label)+1):
+        sub_coord_shift = coord_shift[label == cls]
+        sub_coord = coord[label == cls]
+        # print('cls', cls)
+        if len(sub_coord) ==0:
+            # warning. need to add dummy not to harm order of cls
+            print('cls %d is not detected in point cloud'%cls)
+            # todo temp
+            sub_coord = np.zeros((20,3))
+            sub_coord_shift = np.zeros((20, 3))
+            # continue
+
+        # save_obj_color_coding(os.path.join(path,'%s_%d_pts.obj' % (name, i)), pts_trans, np.ones(len(pts_trans))*i)
+        if cls<6:
+            eps, min_samples = 0.15, 3  # todo pts_ori vs pts_trans
+            thre = 2
+        else:
+            eps, min_samples = 0.2, 3
+            thre = 2
+        if cls<6:
+            dbscan = DBSCAN(eps=eps, min_samples=min_samples).fit(sub_coord_shift)
+        else:
+            dbscan = DBSCAN(eps=eps, min_samples=min_samples).fit(sub_coord)
+
+        instances = [sub_coord[dbscan.labels_ == j] for j in range(max(dbscan.labels_)+1) if len(sub_coord[dbscan.labels_ == j]) > thre]
+
+        # segment check
+        # inst_label = [np.ones(len(sub_coord[dbscan.labels_ == j]))*(j%28) for j in range(max(dbscan.labels_)+1) if len(sub_coord[dbscan.labels_ == j]) > thre]
+        # save_obj_color_coding('tmp/%d_cls_inst.obj'%cls, np.vstack(instances), np.concatenate(inst_label))
+
+        cls_seg_list.append(instances)
+        for k in range(len(instances)):
+            cls_list.append(cls)
+
+        index_list = []
+        for k in range(len(instances)):
+            index_list.append(inst_idx)
+            inst_idx += 1
+        cls_segId_list.append(index_list)
+
+    return cls_seg_list, cls_segId_list, cls_list
+
+
+
+def make_pairs(seg_list, segId_list):
+    # adjacent face indices ordered by edge index
+    f_lookup = [[0, 1], [0, 2], [1, 2], [0, 3], [1, 3], [0, 4], [2, 4], [3, 4], [1, 5], [2, 5], [3, 5], [4, 5]]
+    normal_lookup = [[-1, 0, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [0, 1, 0], [1, 0, 0]]
+    pair_list, pair_cls_list = [], []
+
+    f_seg_list, e_seg_list = seg_list[:6], seg_list[6:18]
+    f_ind_list, e_ind_list = segId_list[:6], segId_list[6:18]
+    # print('name', name, 'len of f', len(list(itertools.chain(*f_seg_list))), 'len of e',
+    #       len(list(itertools.chain(*e_seg_list))))
+
+    # for each edge class
+    tmp_list = []
+    tmp_cnt = 0
+    for cls_idx, (eid_list, e_list) in enumerate(zip(e_ind_list, e_seg_list[:12])):
+        f_idx1, f_idx2 = f_lookup[cls_idx][0], f_lookup[cls_idx][1]
+        f_list1, f_list2 = f_seg_list[f_idx1], f_seg_list[f_idx2]
+        f_inst_id1, f_inst_id2 = segId_list[f_idx1], segId_list[f_idx2]
+
+        # tmp viz
+        # save_obj('tmp%d.obj'%cls_idx,np.vstack(e_list))
+        # save_obj('tmp%d_f1.obj' % cls_idx, np.vstack(f_list1))
+        # save_obj('tmp%d_f2.obj' % cls_idx, np.vstack(f_list2))
+        # continue
+
+        # exception case due to wrong clustering
+        if (len(f_list1)==0) or (len(f_list2)==0):
+            continue
+
+        # based on edge supp, get the closest face
+        e_supp_rel, f_supp_rel1, f_supp_rel2 = None, None, None
+
+        for (e_idx, e_supp) in zip(eid_list, e_list):
+            paired, paired_cls = [], []
+            max_r, pair1 = 0, None
+            e_supp_rel = e_supp
+            for k, fsup1 in enumerate(f_list1):
+                # -------option 1. warning distance from edge samples --> may yield problem when edge is very noisy or spread
+                dist1 = np.min(distance.cdist(e_supp, fsup1), axis=1)
+
+                r = np.sum(dist1 < 0.15) / len(dist1)
+                # print(r)
+                if r > 0.4 and r > max_r:
+                    pair1 = f_inst_id1[k]
+                    max_r = r
+                    f_supp_rel1 = fsup1
+                    tmp_list.append(f_supp_rel1)
+
+            max_r, pair2 = 0, None
+            for k, fsup2 in enumerate(f_list2):
+                #--------option1 --------------
+                dist2 = np.min(distance.cdist(e_supp, fsup2), axis=1)
+                r = np.sum(dist2 < 0.15) / len(dist2)
+                # print(r)
+                if r > 0.4 and r > max_r:
+                    pair2 = f_inst_id2[k]
+                    max_r = r
+                    f_supp_rel2 = fsup2
+
+                    tmp_list.append(f_supp_rel2)
+
+
+            if pair1 is not None:
+                paired.append(pair1)
+                paired_cls.append(f_idx1)
+            if pair2 is not None:
+                paired.append(pair2)
+                paired_cls.append(f_idx2)
+
+            # if pair is created, check positional relation is correct
+            # rule: swap + opposite sign
+            if len(paired) == 2:
+                v1_gt, v2_gt = -np.asarray(normal_lookup[f_idx2]), -np.asarray(normal_lookup[f_idx1])
+                m_e, m_f1, m_f2 = np.mean(e_supp_rel, axis=0), np.mean(f_supp_rel1, axis=0), np.mean(f_supp_rel2, axis=0)
+                v1, v2 = (m_f1-m_e)/np.linalg.norm(m_f1-m_e), (m_f2-m_e)/np.linalg.norm(m_f2-m_e)
+                sim1, sim2 = np.dot(v1, v1_gt), np.dot(v2, v2_gt)
+                # print('paired')
+                # save_obj('tmp/%d.obj'%tmp_cnt, np.vstack((f_supp_rel1, f_supp_rel2)))
+                # tmp_cnt += 1
+                # print(sim1, sim2)
+
+                if sim1<0 or sim2<0:
+                    continue
+
+            if paired:
+                paired.append(e_idx) # add edge index to last
+                pair_list.append(paired)
+
+    # save paired data
+    # save_obj('tmp.obj', np.vstack(tmp_list))
+    return pair_list
+
+
+
+'''
+    aggregation code based on DFP
+'''
+def aggregate_pairs_v2(pair_list):
+    # Generate data
+    face_ids = set([])
+    edge_ids = []
+    edge_info = {}
+    for pair in pair_list:
+        edge_id = pair[-1]
+        if len(pair) == 3:
+            face_1_id = pair[0]
+            face_2_id = pair[1]
+            face_ids.add(face_1_id)
+            face_ids.add(face_2_id)
+        else:
+            face_1_id = pair[0]
+            face_2_id = None
+            face_ids.add(face_1_id)
+        edge_ids.append(edge_id)
+        edge_info[edge_id] = (face_1_id, face_2_id)
+    face_ids = list(face_ids)
+
+    # Make adjacency list
+    adj_list = {f: [] for f in face_ids}
+    for e in edge_ids:
+        f1 = edge_info[e][0]
+        f2 = edge_info[e][1]
+        if f1 == None or f2 == None: continue
+        adj_list[f1].append(f2)
+        adj_list[f2].append(f1)
+
+    # DFS for finding connected component groups
+    def explore(i, obj_num, obj_ids):
+        obj_ids[i] = obj_num
+        for j in adj_list[i]:
+            if obj_ids[j] == -1:
+                explore(j, obj_num, obj_ids)
+
+    obj_ids = [-1 for i in range(max(face_ids + edge_ids) + 1)]
+    obj_num = 0
+    for f in face_ids:
+        if obj_ids[f] == -1:
+            explore(f, obj_num, obj_ids)
+            obj_num += 1
+
+    # Assign obj ids for edges
+    for e in edge_ids:
+        if edge_info[e][0] != None:
+            obj_ids[e] = obj_ids[edge_info[e][0]]
+        else:
+            obj_ids[e] = obj_ids[edge_info[e][1]]
+
+    return obj_ids
+
+
+
+'''
+polycube - cube oriented grid filling algo
+'''
+def instantiation_eval_v2(args, name, samples, pred_offset, pred_labels, is_rot=True):
+    # 1. generate segments
+    seg_list, segId_list, seg_cls_list = generate_segment(samples, pred_offset, pred_labels)
+
+    # to save
+    # seg_list = list(itertools.chain(*seg_list[:18]))
+    # np.save('segment_list.npy', seg_list), np.save('pair_list.npy', pair_list)
+
+    # 2. make a pair of face which share adjacent adge
+    pair_list = make_pairs(seg_list, segId_list)
+    print('number of paired list', len(pair_list))
+    # 3. aggregate pairs to make instance
+
+    # 3.2
+    merged_pair_list = aggregate_pairs_v2(pair_list)
+    merged_pair_list = np.asarray(merged_pair_list)
+
+    # ** len(merged_pair_list) < len(final_seg_list)
+    final_seg_list = np.asarray(list(itertools.chain(*seg_list[:18])))
+    final_segcls_list = np.asarray(seg_cls_list[:len(merged_pair_list)])
+
+    box_supp_list, polycube_list, polycube_viz_list = [], [], []
+    data = np.vstack(
+        [np.vstack(final_seg_list[np.where(merged_pair_list == i)[0]]) for i in range(max(merged_pair_list) + 1)])
+    preds = np.concatenate(
+        np.asarray([np.ones(len(np.vstack(final_seg_list[np.where(merged_pair_list == i)[0]]))) * (i % 20) for i in
+                    range(max(merged_pair_list) + 1)]))
+    seg_id = np.concatenate([np.ones(len(p)) * kk for kk, p in enumerate(final_seg_list)])
+
+    # ------------save for viz iccv---------------
+    # np.save('input_offset.npy', pred_offset+samples); np.save('input.npy', samples); np.save('input_cls.npy', pred_labels)
+    # np.save('instance_pts.npy', data); np.save('instance_id.npy', preds)
+    # np.save('segment_pts.npy', np.vstack(final_seg_list)); np.save('segment_id.npy', seg_id)
+    # mask_pair = np.concatenate([random.choice(pair_list) for kk in range(3)])
+    # non_mask = set(np.concatenate(pair_list)) - set(mask_pair)
+    # non_pair = np.vstack([final_seg_list[p_id] for p_id in non_mask])
+    # pair = np.vstack([final_seg_list[p_id] for p_id in mask_pair])
+    # save_obj('tmp_pair.obj',pair); save_obj('tmp_nonpair.obj', non_pair)
+    # save_obj_color_coding('tmp/%s_in.obj' % name, data, preds)
+    #---------------------------------------------
+
+    print('len of detected object', max(merged_pair_list) + 1)
+    for i in range(max(merged_pair_list) + 1):
+        obj_seg_cls = final_segcls_list[merged_pair_list == i]
+        obj_seg = final_seg_list[np.where(merged_pair_list == i)[0]]
+        supp = np.vstack(obj_seg)
+
+        x1, x2, y1, y2, z = None, None, None,None,None
+        if 0 in obj_seg_cls:
+            tmp_subseg = obj_seg[obj_seg_cls == 0]
+            x1 = np.vstack([x_tmp - np.mean(x_tmp, 0) for x_tmp in tmp_subseg])
+
+        if 5 in obj_seg_cls:
+            tmp_subseg = obj_seg[obj_seg_cls == 5]
+            x2 = np.vstack([x_tmp - np.mean(x_tmp, 0) for x_tmp in tmp_subseg])
+
+        if 1 in obj_seg_cls:
+            tmp_subseg = obj_seg[obj_seg_cls == 1]
+            y1 = np.vstack([y_tmp - np.mean(y_tmp, 0) for y_tmp in tmp_subseg])
+
+        if 4 in obj_seg_cls:
+            tmp_subseg = obj_seg[obj_seg_cls == 4]
+            y2 = np.vstack([y_tmp - np.mean(y_tmp, 0) for y_tmp in tmp_subseg])
+
+        # ori coord
+        x_vec1, y_vec1 = np.asarray([-1, 0, 0]), np.asarray([0, -1, 0])
+        x_vec2, y_vec2, z_vec = np.asarray([1,0,0]), np.asarray([0,1,0]), np.asarray([0,0,1])
+        gt_rot = np.asarray([x_vec1, y_vec1, x_vec2, y_vec2, z_vec])
+        # compute normal of each face segment
+        if x1 is not None:
+            x_eval, x_evec = np.linalg.eig(np.cov(x1.T))
+            x_vec1 = x_evec[:,np.argmin(x_eval)]
+            if x_vec1[0]>0:
+                x_vec1 *= -1
+            # x_rot = R.align_vectors(x_vec.reshape(1, -1), np.asarray([1, 0, 0]).reshape(1, -1))[0].as_matrix()
+            # rot = np.matmul(x_rot, rot)
+        if x2 is not None:
+            x_eval, x_evec = np.linalg.eig(np.cov(x2.T))
+            x_vec2 = x_evec[:, np.argmin(x_eval)]
+            if x_vec2[0]<0:
+                x_vec2 *= -1
+        if y1 is not None:
+            y_eval, y_evec = np.linalg.eig(np.cov(y1.T))
+            y_vec1 = y_evec[:,np.argmin(y_eval)]
+            if y_vec1[1] >0:
+                y_vec1 *= -1
+        if y2 is not None:
+            y_eval, y_evec = np.linalg.eig(np.cov(y2.T))
+            y_vec2 = y_evec[:, np.argmin(y_eval)]
+            if y_vec2[1]<0:
+                y_vec2 *= -1
+
+        d = np.asarray([x_vec1, y_vec1,  x_vec2,y_vec2, z_vec])
+        rot = R.align_vectors(gt_rot, d)[0].as_matrix()  # d to gt_rot
+        rot_mat = R.from_matrix(rot)
+        z_angle = rot_mat.as_euler('xyz', degrees=True)[2] #consider only along z-axis
+        rot_angle = R.from_euler('z', z_angle, degrees=True)
+        rot = rot_angle.as_matrix()
+
+        trans_mean = np.mean(supp, axis=0)
+        supp -= trans_mean
+        if is_rot:
+            supp = np.matmul(rot, supp.T).T
+
+        # trans_min = np.min(supp, axis=0)
+        # supp -= trans_min
+
+        # save_obj('tmp/%s_sup_%d_aligned.obj'%(name,i), supp)
+        # viz pred obj
+        # obj_pred_cls = np.concatenate([np.ones(len(item)) * item_cls for kk, (item,item_cls) in enumerate(zip(obj_seg, obj_seg_cls))])
+        # save_obj_color_coding('tmp/inst_f_%d.obj'%i, supp, obj_pred_cls)
+
+        obb = trimesh.points.PointCloud(supp).bounding_box
+        coord = [[], [], []]
+        # compute center, min, max and normal of segment
+        final_seg_center, final_seg_minmax, final_normal = [], [], []
+        normal_lookup = [[-1, 0, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [0, 1, 0], [1, 0, 0]]
+
+        obj_seg = obj_seg[obj_seg_cls < 6]
+        obj_seg_cls = obj_seg_cls[obj_seg_cls < 6]
+
+        # for kk, (seg, cls) in enumerate(zip(obj_seg, obj_seg_cls)):
+        #     save_obj_color_coding('tmp/%s_%d_%d.obj'%(name,i,kk), seg, np.ones(len(seg))*cls)
+
+        # todo rotation and translation - mean min?
+        if is_rot:
+            obj_seg = np.asarray([np.matmul(rot, (tmp_pts - trans_mean).T).T for tmp_pts in obj_seg])  #np.matmul(rot, (tmp_pts - trans_mean).T).T - trans_min
+        else:
+            obj_seg = np.asarray([(tmp_pts - trans_mean)  for tmp_pts in obj_seg])
+
+
+        # for kk, (seg, cls) in enumerate(zip(obj_seg, obj_seg_cls)):
+        #     save_obj_color_coding('tmp/tmprot%d.obj'%kk, seg, np.ones(len(seg))*cls)
+
+        # add bounding box minmax to front and end of grid coordinate
+        min_obb, max_obb = np.min(obb.vertices, axis=0), np.max(obb.vertices, axis=0)
+        [coord[ii].append(max_obb[ii]) for ii in range(3)]
+        [coord[ii].insert(0, min_obb[ii]) for ii in range(3)]
+
+        # generate coordinate
+        for (item, cls) in zip(obj_seg, obj_seg_cls):
+            seg_normal = np.asarray(normal_lookup[cls])
+
+            seg_mean = np.mean(item, axis=0)
+            axis = np.where(seg_normal != 0)[0][0]
+            minmax = np.concatenate((np.min(item, axis=0), np.max(item, axis=0)))
+            final_seg_minmax.append(minmax)
+            final_normal.append(seg_normal)
+
+            # if there are redundant points after projecting to each axis, ignore this one
+            v = seg_mean[axis]
+            if ((abs(coord[axis] - v)) < 0.1).any():
+                continue
+            coord[axis].append(v)
+
+        coord = [sorted(coord[i]) for i in range(3)]
+
+        # viz grid
+        final_coord = []
+        cx, cy, cz = np.asarray(coord[0]), np.asarray(coord[1]), np.asarray(coord[2])
+        for ii in range(len(cx)):
+            for jj in range(len(cy)):
+                for kk in range(len(cz)):
+                    final_coord.append(np.asarray([cx[ii], cy[jj], cz[kk]]))
+
+        # save_obj('tmp/%s_%d_grid.obj'%(name,i), np.vstack(final_coord))
+
+        # assign boolean to grid
+        bool_grid = np.zeros((len(coord[0]) - 1, len(coord[1]) - 1, len(coord[2]) - 1))
+
+        for ii in range(bool_grid.shape[0]):
+            for jj in range(bool_grid.shape[1]):
+                for kk in range(bool_grid.shape[2]):
+                    minxyz= coord[0][ii], coord[1][jj], coord[2][kk]
+                    maxxyz = coord[0][ii+1], coord[1][jj+1], coord[2][kk+1]
+                    minxyz, maxxyz = np.asarray(minxyz), np.asarray(maxxyz)
+
+                    tmp_supp = []
+                    # for each face of cell
+                    for fi, normal in enumerate(zip(normal_lookup)):
+                        # point to point distance
+                        xyz1, xyz2 = np.zeros(3), np.zeros(3)
+                        normal = np.asarray(normal).reshape(-1)
+                        xyz1[normal==0], xyz2[normal==0] = minxyz[normal==0], maxxyz[normal==0]
+                        eps = 0.1
+                        if normal[normal!=0] < 0:
+                            xyz1[normal!=0] = minxyz[normal!=0] -eps
+                        else:
+                            xyz1[normal != 0] = maxxyz[normal != 0]-eps
+                        xyz2[normal!=0] = xyz1[normal!=0]+eps*2
+                        # point of cls // ** warning: if object is occluded, some cls may be not included.
+                        if len(obj_seg[obj_seg_cls == fi])==0:
+                            continue
+                        pts_seg = np.vstack(obj_seg[obj_seg_cls == fi])
+
+                        # pts_seg -= trans
+                        # pts_seg = np.matmul(rot, pts_seg.T).T
+
+                        mask1, mask2 = (xyz1<pts_seg).all(axis=1), (pts_seg<xyz2).all(axis=1)
+                        n_total = np.sum(mask1*mask2)
+                        tmp_pts_seg = pts_seg[mask1*mask2]
+
+                        # if len(tmp_pts_seg)!=0:
+                        #     tmp_supp.append(tmp_pts_seg)
+                        # print(n_total)
+                        if n_total <30: # 범주내 포인트가 일정개수 이하면 없다고 판단
+                            # print(n_total)
+                            continue
+                        bool_grid[ii,jj,kk]=1
+                    # save_obj('tmp%d%d%d.obj'%(ii,jj,kk), np.vstack(tmp_supp))
+
+        # exit(0)
+        # generate cube based on boolean cube
+        polycube, polycubeo3d = None, None
+        tmp_polycube = []
+        coord1, coord2, coord3 = coord[0], coord[1], coord[2]
+        for ii in range(bool_grid.shape[0]):
+            for jj in range(bool_grid.shape[1]):
+                for kk in range(bool_grid.shape[2]):
+                    if bool_grid[ii, jj, kk] == 1:
+                        # print(ii, jj, kk)
+                        gx, gy, gz = coord1[ii:ii + 2], coord2[jj:jj + 2], coord3[kk:kk + 2]
+                        # print('gx gy gz', gx, gy, gz)
+                        grid_pts = np.vstack([gx, gy, gz]).T
+
+                        # -----remove if is_rot:
+                        #     grid_pts += (trans_min + trans_mean) # np.matmul(np.linalg.inv(rot), grid_pts.T).T + trans_min + trans_mean
+                        # else:-------------
+                        grid_obb = trimesh.points.PointCloud(grid_pts).bounding_box
+
+                        if polycube:
+                            polycube = trimesh.util.concatenate(polycube, grid_obb)
+
+                        else:
+                            polycube = grid_obb
+
+                        tmp_polycube.append(grid_obb)
+
+
+        # is_fail = False
+        # max_cnt, start_cnt = len(tmp_polycube)*5, 0
+        # while len(tmp_polycube) != 0:
+        #     item = tmp_polycube.pop()
+        #     if final_poly is None:
+        #         final_poly = item
+        #     else:
+        #         tmp_final_poly = final_poly.boolean_union(item)
+        #         tmp_final_poly = o3d.t.geometry.TriangleMesh.to_legacy(tmp_final_poly)
+        #         if len(tmp_final_poly.vertices) != 0:
+        #             final_poly = final_poly.boolean_union(item)
+        #         else:
+        #             tmp_polycube.append(item)
+        #     start_cnt+= 1
+        #     if start_cnt >max_cnt:
+        #         trimesh.exchange.export.export_mesh(polycube, 'tmp/%s_%d_fail.obj' % (name, i))
+        #         print('fail to generate mesh')
+        #         is_fail = True
+        #         break
+
+
+        if polycube is None:
+            # print('none poly, need to rotate cube for axis-alignment')
+            continue
+        # union
+        if len(tmp_polycube) == 1:
+            final_poly = tmp_polycube[0]
+        else:
+            final_poly = None
+            for kk in range(len(tmp_polycube)):
+                ori_p = tmp_polycube[kk].copy()
+                tmp_p = tmp_polycube[kk].copy()
+                tmp_polycube.pop(kk)
+                mask =[]
+                for tmp_other in tmp_polycube:
+                    # facet center list
+                    p_center, o_center = [], []
+                    for fc in tmp_p.facets:
+                        p_center.append(tmp_p.vertices[np.unique(np.concatenate(tmp_p.faces[fc]))].mean(axis=0))
+
+                    for pc in tmp_other.facets:
+                        o_center.append(tmp_other.vertices[np.unique(np.concatenate(tmp_other.faces[pc]))].mean(axis=0))
+
+                    p_center, o_center = np.asarray(p_center), np.asarray(o_center)
+                    dist = distance.cdist(p_center, o_center)
+                    if np.min(dist)<0.000001:
+                        idx = np.where(np.min(dist, axis=1) < 0.000001)[0]
+                        for f_idx in idx:
+                            mask.append(tmp_p.facets[f_idx])
+                tmp_polycube.insert(kk, ori_p)
+
+                mask_total = set([i for i in range(len(tmp_p.faces))])
+                if len(mask) != 0:
+                    mask = set(np.concatenate(mask))
+                    mask_final = list(mask_total-mask)
+                else:
+                    mask_final = list(mask_total)
+                tmp_v = tmp_p.vertices.copy()
+                tmp_f = tmp_p.faces.copy()
+                tmp_f_n = tmp_p.face_normals.copy()
+                new_mesh = trimesh.Trimesh(vertices=tmp_v, faces=tmp_f[mask_final], face_normals=tmp_f_n[mask_final])
+
+                # trimesh.exchange.export.export_mesh(new_mesh, 'tmp_new%d.obj'%kk)
+                if final_poly is None:
+                    final_poly = new_mesh
+                else:
+                    final_poly = trimesh.util.concatenate(final_poly, new_mesh)
+            final_poly.process()
+
+
+        # transform to original coordinate
+        transform = np.eye(4)
+        # todo rotation
+        if is_rot:
+            transform[:3,:3] = np.linalg.inv(rot)
+
+        transform[:3,3] = trans_mean  #+ trans_min
+        final_poly.apply_transform(transform)
+
+        polycube_list.append(final_poly)
+        # trimesh.exchange.export.export_mesh(final_poly, 'tmp/%s_%d_out.obj'%(name, i))
+        if polycube_viz_list:
+            polycube_viz_list = trimesh.util.concatenate(polycube_viz_list, final_poly)
+        else:
+            polycube_viz_list = final_poly
+
+        # global to local
+        # todo rot
+        if is_rot:
+            supp = np.matmul(np.linalg.inv(rot), supp.T).T
+
+        supp += trans_mean  #(trans_min + trans_mean)
+        box_supp_list.append(supp)
+    # viz
+    # o3d.io.write_triangle_mesh('tmp/%s_out_o3d.obj' % name, total_poly)
+    trimesh.exchange.export.export_mesh(polycube_viz_list, 'tmp/%s_out.obj' % name)
+    inpath= os.path.join(args.result_path, args.name, args.eval_folder, name + '_in.obj')
+    save_obj_color_coding(inpath, np.vstack(box_supp_list), np.concatenate(
+        np.asarray([np.ones(len(box_supp_list[i])) * (i % 20) for i in range(len(box_supp_list))])))
+    # exit(0)
+    return box_supp_list, polycube_list, polycube_viz_list
+
+
+'''
+polycube - cube oriented grid filling algo
+'''
+def instantiation_eval_v2_backup(args, name, samples, pred_offset, pred_labels):
+    # 1. generate segments
+    seg_list, segId_list, seg_cls_list = generate_segment(samples, pred_offset, pred_labels)
+
+    # to save
+    # seg_list = list(itertools.chain(*seg_list[:18]))
+    # np.save('segment_list.npy', seg_list), np.save('pair_list.npy', pair_list)
+
+    # 2. make a pair of face which share adjacent adge
+    pair_list = make_pairs(seg_list, segId_list)
+    print('number of paired list', len(pair_list))
+    # 3. aggregate pairs to make instance
+    # merged_pair_list = aggregate_pairs(pair_list)
+
+    # 3.2
+    merged_pair_list = aggregate_pairs_v2(pair_list)
+    merged_pair_list = np.asarray(merged_pair_list)
+
+    # ** len(merged_pair_list) < len(final_seg_list)
+    final_seg_list = np.asarray(list(itertools.chain(*seg_list[:18])))
+    final_segcls_list = np.asarray(seg_cls_list[:len(merged_pair_list)])
+
+
+    box_supp_list, polycube_list = [], []
+
+    data = np.vstack(
+        [np.vstack(final_seg_list[np.where(merged_pair_list == i)[0]]) for i in range(max(merged_pair_list) + 1)])
+    preds = np.concatenate(
+        np.asarray([np.ones(len(np.vstack(final_seg_list[np.where(merged_pair_list == i)[0]]))) * (i % 20) for i in
+                    range(max(merged_pair_list) + 1)]))
+    in_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_in.obj')
+    save_obj_color_coding(in_path, data, preds)  #'tmp/%s_in.obj' % name
+
+    print('len of detected object', max(merged_pair_list) + 1)
+    for i in range(max(merged_pair_list) + 1):
+        obj_seg_cls = final_segcls_list[merged_pair_list == i]
+        obj_seg = final_seg_list[np.where(merged_pair_list == i)[0]]
+        supp = np.vstack(obj_seg)
+        supp_id = np.concatenate([np.ones(len(item))*kk for kk, item in enumerate(obj_seg)])
+        # ----------------remove outlier
+        # o3d_pts = o3d.geometry.PointCloud()
+        # o3d_pts.points = o3d.utility.Vector3dVector(supp)
+        # o3d_pts = o3d_pts.voxel_down_sample(voxel_size=0.04)
+        # cl, ind = o3d_pts.remove_radius_outlier(nb_points=3, radius=0.08)
+        # # new_supp = np.asarray(o3d_pts.remove_radius_outlier(nb_points=3, radius=0.05)[0].points)
+        # new_supp, new_supp_id = supp[ind], supp_id[ind]
+        # supp = [new_supp[new_supp_id == kk] for kk in range(int(max(new_supp_id)) + 1)]
+        # # coodinate move todo rotation
+        # supp = np.vstack(supp)
+        #---------------------------------
+
+        trans = np.min(supp, axis=0)
+        supp -= trans
+
+        obj_pred_cls = np.concatenate([np.ones(len(item)) * item_cls for kk, (item,item_cls) in enumerate(zip(obj_seg, obj_seg_cls))])
+        # save_obj_color_coding('tmp/inst_f_%d.obj'%i, supp, obj_pred_cls)
+        obb = trimesh.points.PointCloud(supp).bounding_box
+        coord = [[], [], []]
+        # compute center, min, max and normal of segment
+        final_seg_center, final_seg_minmax, final_normal = [], [], []
+        normal_lookup = [[-1, 0, 0], [0, -1, 0], [0, 0, -1], [0, 0, 1], [0, 1, 0], [1, 0, 0]]
+
+        obj_seg = obj_seg[obj_seg_cls < 6]
+        obj_seg_cls = obj_seg_cls[obj_seg_cls < 6]
+        # add bounding box minmax to front and end of grid coordinate
+        min_obb, max_obb = np.min(obb.vertices, axis=0), np.max(obb.vertices, axis=0)
+        [coord[ii].append(max_obb[ii]) for ii in range(3)]
+        [coord[ii].insert(0, min_obb[ii]) for ii in range(3)]
+
+        # generate coordinate
+        for (item, cls) in zip(obj_seg, obj_seg_cls):
+            seg_normal = np.asarray(normal_lookup[cls])
+
+            # coordinate move todo
+            item -= trans
+
+            seg_mean = np.mean(item, axis=0)
+            axis = np.where(seg_normal != 0)[0][0]
+            minmax = np.concatenate((np.min(item, axis=0), np.max(item, axis=0)))
+            final_seg_minmax.append(minmax)
+            final_normal.append(seg_normal)
+
+            # if there are redundant points after projecting to each axis, ignore this one
+            v = seg_mean[axis]
+            if ((abs(coord[axis] - v)) < 0.1).any():
+                continue
+            coord[axis].append(v)
+
+        coord = [sorted(coord[i]) for i in range(3)]
+
+        # viz grid
+        final_coord = []
+        cx, cy, cz = np.asarray(coord[0]), np.asarray(coord[1]), np.asarray(coord[2])
+        for ii in range(len(cx)):
+            for jj in range(len(cy)):
+                for kk in range(len(cz)):
+                    final_coord.append(np.asarray([cx[ii], cy[jj], cz[kk]]))
+
+        # assign boolean to grid
+        bool_grid = np.zeros((len(coord[0]) - 1, len(coord[1]) - 1, len(coord[2]) - 1))
+
+        for ii in range(bool_grid.shape[0]):
+            for jj in range(bool_grid.shape[1]):
+                for kk in range(bool_grid.shape[2]):
+                    minxyz= coord[0][ii], coord[1][jj], coord[2][kk]
+                    maxxyz = coord[0][ii+1], coord[1][jj+1], coord[2][kk+1]
+                    minxyz, maxxyz = np.asarray(minxyz), np.asarray(maxxyz)
+
+                    for fi, normal in enumerate(zip(normal_lookup)):
+                        # point to point distance
+                        xyz1, xyz2 = np.zeros(3), np.zeros(3)
+                        normal = np.asarray(normal).reshape(-1)
+                        xyz1[normal==0], xyz2[normal==0] = minxyz[normal==0], maxxyz[normal==0]
+                        eps = 0.1
+                        if normal[normal!=0] < 0:
+                            xyz1[normal!=0] = minxyz[normal!=0] -eps
+                        else:
+                            xyz1[normal != 0] = maxxyz[normal != 0]-eps
+                        xyz2[normal!=0] = xyz1[normal!=0]+eps*2
+                        # point of cls // ** warning: if object is occluded, some cls may be not included.
+                        if len(obj_seg[obj_seg_cls == fi])==0:
+                            continue
+                        pts_seg = np.vstack(obj_seg[obj_seg_cls == fi])
+                        mask1, mask2 = (xyz1<pts_seg).all(axis=1), (pts_seg<xyz2).all(axis=1)
+                        n_total = np.sum(mask1*mask2)
+                        print(n_total)
+                        if n_total <20: # 범주내 포인트가 일정개수 이하면 없다고 판단
+                            continue
+                        bool_grid[ii,jj,kk]=1
+
+        # generate cube based on boolean cube
+        polycube = None
+        coord1, coord2, coord3 = coord[0], coord[1], coord[2]
+        for ii in range(bool_grid.shape[0]):
+            for jj in range(bool_grid.shape[1]):
+                for kk in range(bool_grid.shape[2]):
+                    if bool_grid[ii, jj, kk] == 1:
+                        print(ii, jj, kk)
+                        gx, gy, gz = coord1[ii:ii + 2], coord2[jj:jj + 2], coord3[kk:kk + 2]
+                        print('gx gy gz', gx, gy, gz)
+                        grid_pts = np.vstack([gx, gy, gz]).T
+                        # todo trans to original coordinate
+                        grid_pts += trans
+                        grid_obb = trimesh.points.PointCloud(grid_pts).bounding_box
+                        if polycube:
+                            polycube = trimesh.util.concatenate(polycube, grid_obb)
+                        else:
+                            polycube = grid_obb
+        if polycube is None:
+            print('none poly, need to rotate cube for axis-alignment')
+            continue
+        polycube.process()
+        trimesh.exchange.export.export_mesh(polycube, 'tmp/%s_%d_out.obj'%(name, i))
+        if polycube_list:
+            polycube_list = trimesh.util.concatenate(polycube_list, polycube)
+        else:
+            polycube_list = polycube
+
+        supp += trans
+        box_supp_list.append(supp)
+    # viz
+
+    trimesh.exchange.export.export_mesh(polycube_list, 'tmp/%s_out.obj' % name)
+    save_obj_color_coding('tmp/%s_in.obj' % name, np.vstack(box_supp_list), np.concatenate(
+        np.asarray([np.ones(len(box_supp_list[i])) * (i % 20) for i in range(len(box_supp_list))])))
+    exit(0)
+    return box_supp_list
 
 
 def instantiation_eval(path, name, samples, pred_offset, pred_labels):
@@ -823,7 +1541,7 @@ def compute_partial_iou(box_a, box_b):
     union1 = box_a[3] * box_a[4] * box_a[5]
     union2 = box_b[3] * box_b[4] * box_b[5]
 
-    thre=0.3
+    thre=0.8
     return (intersection/union1)>thre, (intersection/union2)>thre
 
 def minkowski_collate_fn(list_data):

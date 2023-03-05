@@ -24,7 +24,6 @@ from util.common_util import AverageMeter, intersectionAndUnion, check_makedirs
 from util.voxelize import voxelize
 import torch_points_kernels as tp
 import torch.nn.functional as F
-
 from util.train_utils import *
 random.seed(123)
 np.random.seed(123)
@@ -119,6 +118,10 @@ def data_prepare():
 def data_prepare_custom():
     return glob.glob(os.path.join(args.eval_data_path, '*'))
 
+def data_prepare_scannet_val():
+    SCAN_NAMES = [os.path.join(args.eval_data_path, line.rstrip() +'_vert.npy') for line in open('meta_data/scannetv2_val.txt')]
+    return SCAN_NAMES
+
 # todo for AP evaluation
 def data_load_scannet(data_path):
 
@@ -144,7 +147,9 @@ def data_load_scannet(data_path):
         coord = coord[label!=f_idx]
         label = label[label!=f_idx]
 
-    max_pts = 100000
+    coord_eval = coord  # original n. of coord for evaluation
+
+    max_pts = 30000
     if len(coord) < max_pts:
         max_pts = len(coord)
     choices = np.random.choice(len(coord), max_pts, replace=False)
@@ -161,10 +166,8 @@ def data_load_scannet(data_path):
     bbox_param, bbox_idx = bboxes[:, :-1], bboxes[:, -1:]
     # remove classes to be filtered
     bbox_param = bbox_param[(bbox_idx != filters).all(axis=1)]
-    center, length = bbox_param[:,:3], bbox_param[:,3:]
-    box_gt = np.hstack((center - length/2, center + length/2))
-
-
+    center, length = bbox_param[:, :3], bbox_param[:, 3:]
+    box_gt = np.hstack((center - length / 2, center + length / 2))
     # viz box
     # save_obj('tmp/coord.obj', coord)
     # box_list = []
@@ -183,6 +186,11 @@ def data_load_scannet(data_path):
     if args.coord_move:
         coord_min = np.min(coord, 0)
         coord -= coord_min
+        coord_eval -= coord_min
+        # todo box 도 아예 옮겨버리기
+        center -= coord_min
+        box_gt = np.hstack((center - length / 2, center + length / 2))
+
 
     idx_sort, count = voxelize(coord, args.voxel_size, mode=1)
     for i in range(count.max()):
@@ -190,7 +198,7 @@ def data_load_scannet(data_path):
         idx_part = idx_sort[idx_select]
         idx_data.append(idx_part)
 
-    return coord, feat, box_gt, idx_data, name, coord_min, bbox_param
+    return coord, feat, box_gt, idx_data, name, coord_min, bbox_param, coord_eval
 
 # should not to be used in this file
 def data_load_custom(data_path):
@@ -274,19 +282,20 @@ def test(model):
     args.batch_size_test = 5
     mAP_CLASSIFICATION = Evaluate_metric(1, ignore_class=[0], overlap_threshold=0.25)
     model.eval()
+    total_coverage = []
     # args.voxel_max = None
     with torch.no_grad():
-
         check_makedirs(os.path.join(args.result_path, args.name, args.eval_folder))
-        data_list = data_prepare_custom()
+        data_list = data_prepare_scannet_val()  # data_prepare_custom()
         for idx, item in enumerate(data_list):
-            if idx>1000:
-                break
-            if args.is_mIOU and 'bbox' not in item:
+            print(item)
+            # if idx>1000:
+            #     break
+            if args.is_mIOU and 'vert' not in item:
                 continue
             end = time.time()
 
-            coord, feat, gt_box, idx_data, data_name, coord_min, bbox_param = data_load_scannet(item)
+            coord, feat, gt_box, idx_data, data_name, coord_min, bbox_param, coord_eval = data_load_scannet(item)
 
             pred = torch.zeros((len(coord), args.classes)).cuda()
             pred_shift = torch.zeros((len(coord), 3)).cuda()
@@ -345,93 +354,129 @@ def test(model):
                 pred_shift[idx_part, :] += shift_part
 
             # pred = pred / (pred.sum(-1)[:, None]+1e-8)
-            # move coord to original coord before instantiation
-            coord += coord_min
+            # move coord to original coord before instantiation --> why?
+            # coord += coord_min
             pred = pred.max(1)[1].data.cpu().numpy()
             shift_coord = coord + pred_shift.cpu().numpy()  # todo
 
-            # save classification and regression results
+            # ---todo uncomment ----save classification and regression results
             cls_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res.obj')  # todo fix path
             save_obj_color_coding(cls_res_path, coord, pred)
             offset_res_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_res_offset.obj')  # todo fix path
             save_obj_color_coding(offset_res_path, shift_coord, pred)
-            exit(0)
+            # -----------------------------------------------
+
             # instantiation
             inst_res_path = os.path.join(args.result_path, args.name, args.eval_folder)
-            # mask = np.linalg.norm(pred_offset, axis=1) < 1
-            # pts, pred_offset, pred = coord[mask], pred_offset[mask], pred[mask]
-            try:
-                instances = instantiation_eval(inst_res_path, data_name, coord, pred_shift.cpu().numpy(), pred)
-            except:
-                continue
-                print('fail to instantiation')
+            # try:
+            instances, polycubes, polycube_merge = instantiation_eval_v2(args, data_name, coord, pred_shift.cpu().numpy(), pred, is_rot=False)
+            # except:
+            #     print('erorr  occure in ', data_name)
+            #     continue
 
             if len(instances) < 2:
                 return
 
-            # save instances before merging
-            for k, inst in enumerate(instances):
-                o3d_pts = o3d.geometry.PointCloud()
-                o3d_pts.points = o3d.utility.Vector3dVector(inst)
-                new_pts = np.asarray(
-                    o3d_pts.points)  # np.asarray(o3d_pts.remove_radius_outlier(nb_points=3, radius=0.05)[0].points)
+            # continue
 
-                obb = trimesh.points.PointCloud(new_pts).bounding_box
-                save_obj_color_coding(os.path.join(inst_res_path, data_name + '_%d_instance.obj' % k), inst,
-                                      np.ones(len(inst)) * (k % 20))
-                trimesh.exchange.export.export_mesh(obb,
-                                                    os.path.join(inst_res_path, data_name + '_%d_obb.obj' % k))
 
-            # save instances after merging
+            # chamx_list, chamy_list, new_supp = [], [], []
+            threshold = 0.2
+            # for poly in polycubes:
+            #     samples = np.asarray(trimesh.sample.sample_surface_even(poly, 6000)[0])
+            #     samples = np.asarray(samples)
+            #     new_supp.append(samples)
+            # new_supp = np.vstack(new_supp)
+            new_supp = trimesh.sample.sample_surface_even(polycube_merge, 60000)[0]
+            box_pcd = o3d.geometry.PointCloud()
+            box_pcd.points = o3d.utility.Vector3dVector(new_supp)
+            in_pcd = o3d.geometry.PointCloud()
+            in_pcd.points = o3d.utility.Vector3dVector(coord_eval)
+            cham_x = np.asarray(in_pcd.compute_point_cloud_distance(box_pcd))
+            cham_y = np.asarray(box_pcd.compute_point_cloud_distance(in_pcd))
+
+            pr_x = len(cham_x[cham_x <= threshold]) / len(cham_x)
+            pr_y = len(cham_y[cham_y <= threshold]) / len(cham_y)
+            pr = 0.5 * pr_x + 0.5 * pr_y
+            total_coverage.append(pr)
+
+            print('%s coverage' % data_name, pr)
+            print('%s mean coverage '% data_name, np.mean(total_coverage))
+
+            # continue
             inst_list = list(instances)
-            cnt, end_cnt = 0, len(instances)
-            while (cnt < end_cnt):
-                cur_inst = inst_list.pop(0)
-                merge_list, remain_list = [], []
-                merge_list.append(cur_inst)
-                while (len(inst_list) != 0):
-                    targ_inst = inst_list.pop(0)
-                    # compute iou
-                    cur_box = trimesh.points.PointCloud(cur_inst).bounding_box
-                    targ_box = trimesh.points.PointCloud(targ_inst).bounding_box
-                    cur_box_param = np.concatenate((cur_box.centroid, cur_box.extents))
-                    targ_box_param = np.concatenate((targ_box.centroid, targ_box.extents))
-                    is_overlap1, is_overlap2 = compute_partial_iou(cur_box_param, targ_box_param)
 
-                    # check placed seamlessly by counting number of points adjacent cur_inst?
-                    pc_thre = 0.2
-                    num_neighbor = np.sum(np.min(distance.cdist(cur_inst, targ_inst), axis=0) < pc_thre)
-                    is_seamless = num_neighbor > 10
-                    # print(num_neighbor)
-                    if (is_overlap1 or is_overlap2) and is_seamless:
-                        # merging
-                        merge_list.append(targ_inst)
-                        # print('merge!')
-                    else:
-                        remain_list.append(targ_inst)
+            # save instances before merging
+            # for k, inst in enumerate(instances):
+            #     o3d_pts = o3d.geometry.PointCloud()
+            #     o3d_pts.points = o3d.utility.Vector3dVector(inst)
+            #     new_pts = np.asarray(
+            #         o3d_pts.points)  # np.asarray(o3d_pts.remove_radius_outlier(nb_points=3, radius=0.05)[0].points)
 
-                # add to last
-                new_inst = np.concatenate(merge_list)
-                remain_list.append(new_inst)
-                inst_list = remain_list
+                # obb = trimesh.points.PointCloud(new_pts).bounding_box
+                # save_obj_color_coding(os.path.join(inst_res_path, data_name + '_%d_instance.obj' % k), inst,
+                #                       np.ones(len(inst)) * (k % 20))
+                # trimesh.exchange.export.export_mesh(obb,
+                #                                     os.path.join(inst_res_path, data_name + '_%d_obb.obj' % k))
 
-                cnt += 1
+
+            #-----------------------precision and recall------------------------------------------
+            # save instances after merging
+            # cnt, end_cnt = 0, len(instances)
+            # while (cnt < end_cnt):
+            #     cur_inst = inst_list.pop(0)
+            #     merge_list, remain_list = [], []
+            #     merge_list.append(cur_inst)
+            #     while (len(inst_list) != 0):
+            #         targ_inst = inst_list.pop(0)
+            #         # compute iou
+            #         cur_box = trimesh.points.PointCloud(cur_inst).bounding_box
+            #         targ_box = trimesh.points.PointCloud(targ_inst).bounding_box
+            #         cur_box_param = np.concatenate((cur_box.centroid, cur_box.extents))
+            #         targ_box_param = np.concatenate((targ_box.centroid, targ_box.extents))
+            #         is_overlap1, is_overlap2 = compute_partial_iou(cur_box_param, targ_box_param)
+            #
+            #         # check placed seamlessly by counting number of points adjacent cur_inst?
+            #         pc_thre = 0.1
+            #         num_neighbor = np.sum(np.min(distance.cdist(cur_inst, targ_inst), axis=0) < pc_thre)
+            #         # print(num_neighbor)
+            #         is_seamless = num_neighbor > 100
+            #         # print(num_neighbor)
+            #         if (is_overlap1 or is_overlap2) and is_seamless:
+            #             # merging
+            #             merge_list.append(targ_inst)
+            #             # print('merge!')
+            #         else:
+            #             remain_list.append(targ_inst)
+            #
+            #     # add to last
+            #     new_inst = np.concatenate(merge_list)
+            #     remain_list.append(new_inst)
+            #     inst_list = remain_list
+            #     cnt += 1
 
             # save new obb
             pred_box = []
+            pred_box_viz = None
             for k, inst in enumerate(inst_list):
                 o3d_pts = o3d.geometry.PointCloud()
                 o3d_pts.points = o3d.utility.Vector3dVector(inst)
                 new_pts = np.asarray(o3d_pts.points)
-                # np.asarray(o3d_pts.remove_radius_outlier(nb_points=3, radius=0.05)[0].points)
 
                 obb = trimesh.points.PointCloud(new_pts).bounding_box
-                save_obj_color_coding(os.path.join(inst_res_path, data_name + '_m_%d_instance.obj' % k), inst,
-                                      np.ones(len(inst)) * (k % 20))
-                trimesh.exchange.export.export_mesh(obb,
-                                                    os.path.join(inst_res_path,
-                                                                 data_name + '_m_%d_obb.obj' % k))
+                # save_obj_color_coding(os.path.join(inst_res_path, data_name + '_m_%d_instance.obj' % k), inst,
+                #                       np.ones(len(inst)) * (k % 20))
+                # trimesh.exchange.export.export_mesh(obb,
+                #                                     os.path.join(inst_res_path,
+                #                                                  data_name + '_m_%d_obb.obj' % k))
+                if pred_box_viz is None:
+                    pred_box_viz = obb
+                else:
+                    pred_box_viz = trimesh.util.concatenate(pred_box_viz, obb)
                 pred_box.append(np.hstack((obb.centroid-obb.extents/2, obb.centroid+obb.extents/2)))
+
+            pred_path = os.path.join(args.result_path, args.name, args.eval_folder, data_name + '_box.obj')
+            trimesh.exchange.export.export_mesh(pred_box_viz, pred_path)
             pred_box = np.vstack(pred_box)
 
             # save gt box
@@ -464,23 +509,25 @@ def test(model):
             #     else:
             #         sort_index.append(False)
             # try:
+            print('len of pred box', len(pred_box), 'len of gt box', len(gt_box))
             mAP_CLASSIFICATION.evaluate(
                 pred_box, #[sort_index],
                 # pred_class, #[sort_index],
                 # pred_conf, #[sort_index],
-                gt_box) #,
-                # gt_class)
+                gt_box)
+
             # mAP_CLASSIFICATION.finalize_precision()
             # mAP_CLASSIFICATION.finalize_recall()
             # print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
             # print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
-            TP = mAP_CLASSIFICATION.total_accumulators[0].TP
-            FP = mAP_CLASSIFICATION.total_accumulators[0].FP
-            FN = mAP_CLASSIFICATION.total_accumulators[0].FN
-            print('accumulated precision: ', TP / (TP + FP))
-            print('accumulated recall: ', TP / (TP + FN))
-            # except:
-            #     print('fail to compute AP')
+            try:
+                TP = mAP_CLASSIFICATION.total_accumulators[0].TP
+                FP = mAP_CLASSIFICATION.total_accumulators[0].FP
+                FN = mAP_CLASSIFICATION.total_accumulators[0].FN
+                print('accumulated precision: ', TP / (TP + FP))
+                print('accumulated recall: ', TP / (TP + FN))
+            except:
+                print('fail to compute AP')
 
         # detected 된 전체 box/ gt 에서 값 추출
         TP = mAP_CLASSIFICATION.total_accumulators[0].TP
@@ -489,20 +536,13 @@ def test(model):
         print('final precision: ', TP / (TP + FP))
         print('final recall: ', TP / (TP + FN))
 
-        # mAP_CLASSIFICATION.finalize()
-        # mAP_CLASSIFICATION.finalize_precision()
-        #
-        # print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
-        # print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
-        # print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
+        mAP_CLASSIFICATION.finalize()
+        mAP_CLASSIFICATION.finalize_precision()
 
-
-        # for class_ind in range(cfg.NUM_CLASSES):
-        #     if class_ind not in mAP_CLASSIFICATION.ignore_class:
-        #         print('class {}: {}'.format(class_ind, mAP_CLASSIFICATION.AP(class_ind)))
-        #-----------------------------------------------------------------------------------
-
-        # batch_time.update(time.time() - end)
+        print('AP of box detection: {}'.format(mAP_CLASSIFICATION.mAP()))
+        print('precision of box detection: {}'.format(mAP_CLASSIFICATION.mean_precision))
+        print('recall of box detection: {}'.format(mAP_CLASSIFICATION.mean_recall))
+        # -----------------------precision and recall------------------------------------------
 
 if __name__ == '__main__':
     main()

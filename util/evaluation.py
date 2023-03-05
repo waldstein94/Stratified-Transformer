@@ -104,6 +104,59 @@ class DetectionMAP:
         IoU = DetectionMAP.jaccard(prediction, gt)
         return IoU
 
+
+    '''
+    code by hj
+    '''
+    @staticmethod
+    def compute_IoU_hj(prediction, gt):
+        # IoU = DetectionMAP.jaccard(prediction, gt)
+        if len(prediction[0]) == 0 or len(gt[0]) == 0:
+            return 0
+        if len(prediction[0]) != 8 or len(gt[0]) != 6:
+            print("Please correct the input data dimension")
+            return 0
+
+        prediction_boxes = []
+        gt_boxes = []
+        area_a = []
+        area_b = []
+        for pred_box in prediction:
+            vertices = np.array(pred_box)
+            faces = np.array([[3, 1, 0], [3, 2, 1],
+                              [1, 2, 6], [2, 7, 6],
+                              [4, 5, 6], [6, 7, 4],
+                              [0, 1, 6], [0, 6, 5],
+                              [0, 4, 3], [0, 5, 4],
+                              [2, 3, 7], [3, 4, 7]]).astype(np.int32)
+            mesh = trimesh.base.Trimesh(vertices=vertices, faces=faces)
+            area = mesh.volume
+            prediction_boxes.append(mesh)
+            area_a.append(area)
+        for gt_box in gt:
+            mesh = trimesh.creation.box((gt_box[3] - gt_box[0], gt_box[4] - gt_box[1], gt_box[5] - gt_box[2]))
+            mesh.apply_transform([[1, 0, 0, (gt_box[3] + gt_box[0]) / 2],
+                                  [0, 1, 0, (gt_box[4] + gt_box[1]) / 2],
+                                  [0, 0, 1, (gt_box[5] + gt_box[2]) / 2],
+                                  [0, 0, 0, 1]])
+            area = mesh.volume
+            gt_boxes.append(mesh)
+            area_b.append(area)
+        pred_scene = trimesh.scene.scene.Scene([prediction_boxes])
+        pred_scene.export("pred_boxes.ply")
+        gt_scene = trimesh.scene.scene.Scene([gt_boxes])
+        gt_scene.export("gt_boxes.ply")
+        # print(len(prediction_boxes))
+        # print(len(gt_boxes))
+        # print(len(area_a))
+        # print(len(area_b))
+        inter = DetectionMAP.intersect_area_3d(prediction_boxes, gt_boxes)
+        area_a = np.array(area_a)[:, np.newaxis]
+        area_b = np.array(area_b)[np.newaxis, :]
+        union = area_a + area_b - inter
+        return inter / union
+
+
     @staticmethod
     def compute_IoU_mask(prediction, gt, confidence):
         IoU = DetectionMAP.jaccard_mask(prediction, gt)
